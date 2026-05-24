@@ -16,6 +16,10 @@ struct CasmRule {
     uint8_t noteLimitLow;
     uint8_t noteLimitHigh;
     uint8_t retriggerRule;
+    uint8_t ntr;
+    uint8_t ntt;
+    uint8_t sourceRoot = 0;       // Default C (0)
+    uint8_t sourceChordType = 2;  // Default Maj7 (2)
     std::vector<uint8_t> rawRuleBytes;
 };
 
@@ -41,6 +45,8 @@ public:
     
 private:
     std::string m_currentSections;
+    uint8_t m_sourceRoot;
+    uint8_t m_sourceChordType;
     std::vector<CasmRule> m_casmRules;
     std::vector<MidiEvent> m_midiEvents; // Stores the entire sequence of notes and section markers
 

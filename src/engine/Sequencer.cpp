@@ -8,8 +8,10 @@ Sequencer::Sequencer(SFF2Parser& parser, MidiOutput& midiOut, ChordRecognizer& c
       m_sectionStartTick(0), m_sectionEndTick(0), m_relativeTick(0), m_eventIndex(0) {
     m_lastValidChord.rootNote = -1;
 
-    // Initialize note memory to -1 (empty)
+    // Initialize note memory to -1 (empty) and caches to 0
     for (int ch = 0; ch < 16; ++ch) {
+        m_cachedMSB[ch] = 0;
+        m_cachedLSB[ch] = 0;
         for (int n = 0; n < 128; ++n) {
             m_playingNotes[ch][n] = -1;
         }
@@ -96,6 +98,7 @@ void Sequencer::setSection(const std::string& sectionName) {
                         destChannel = rule.destChannel;
                         trackName = rule.trackName;
                         ruleMatched = true;
+                        break; // <--- CRITICAL FIX: Stop at the first valid rule
                     }
                 }
                 
@@ -111,6 +114,9 @@ void Sequencer::setSection(const std::string& sectionName) {
                         // Flush Bank Select first
                         m_midiOut.sendControlChange(destChannel, 0, bankMSB);
                         m_midiOut.sendControlChange(destChannel, 32, bankLSB);
+                        // Cache the actual bank sent
+                        m_cachedMSB[destChannel] = bankMSB;
+                        m_cachedLSB[destChannel] = bankLSB;
                         // Then Program Change
                         m_midiOut.sendProgramChange(destChannel, program);
                         
@@ -186,6 +192,7 @@ void Sequencer::tick(uint32_t currentTick) {
                 trackName = rule.trackName;
                 matchedRule = rule;
                 ruleMatched = true;
+                break; // <--- CRITICAL FIX: Stop at the first valid rule
             }
         }
         
@@ -243,12 +250,21 @@ void Sequencer::tick(uint32_t currentTick) {
         else if (type == 0xB0) {
             // Forward Control Changes (including CC0 and CC32 Bank Selects) unaltered
             m_midiOut.sendControlChange(destChannel, ev.data1, ev.data2);
+            if (ev.data1 == 0) {
+                m_cachedMSB[destChannel] = ev.data2;
+            } else if (ev.data1 == 32) {
+                m_cachedLSB[destChannel] = ev.data2;
+            }
         }
         else if (type == 0xC0) {
             uint8_t program = ev.data1;
-            uint8_t bankMSB = 0;
-            uint8_t bankLSB = 0;
+            uint8_t bankMSB = m_cachedMSB[destChannel];
+            uint8_t bankLSB = m_cachedLSB[destChannel];
             m_megaVoiceTranslator.translatePatch(trackName, bankMSB, bankLSB, program);
+            
+            // Keep caches updated in case translatePatch modified them
+            m_cachedMSB[destChannel] = bankMSB;
+            m_cachedLSB[destChannel] = bankLSB;
             
             m_midiOut.sendControlChange(destChannel, 0, bankMSB);
             m_midiOut.sendControlChange(destChannel, 32, bankLSB);

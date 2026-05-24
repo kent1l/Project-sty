@@ -6,7 +6,7 @@
 
 namespace engine {
 
-SFF2Parser::SFF2Parser() {}
+SFF2Parser::SFF2Parser() : m_sourceRoot(0), m_sourceChordType(2) {}
 SFF2Parser::~SFF2Parser() {}
 
 uint32_t SFF2Parser::readBigEndian32(const char* buffer) {
@@ -223,8 +223,26 @@ void SFF2Parser::parseCSEG(const char* data, uint32_t length) {
 }
 
 void SFF2Parser::parseSdec(const char* data, uint32_t length) {
-    m_currentSections = std::string(data, length);
-    std::cout << "          -> Section Context: " << m_currentSections << std::endl;
+    // Sdec in SFF2 can append the source root and source chord type at the end of the chunk.
+    m_sourceRoot = 0;       // Default C
+    m_sourceChordType = 2;  // Default Maj7 (SFF standard default is CMaj7)
+
+    // Find the end of the ASCII comma-separated section list (ends at a null byte or non-printable character)
+    size_t strLen = 0;
+    while (strLen < length && data[strLen] != '\0' && static_cast<uint8_t>(data[strLen]) >= 32) {
+        strLen++;
+    }
+    m_currentSections = std::string(data, strLen);
+
+    // If there is extra binary data, extract the source root and source chord type
+    if (length >= strLen + 2) {
+        m_sourceRoot = static_cast<uint8_t>(data[length - 2]);
+        m_sourceChordType = static_cast<uint8_t>(data[length - 1]);
+    }
+
+    std::cout << "          -> Section Context: " << m_currentSections 
+              << " | Source Root: " << (int)m_sourceRoot 
+              << " | Source Chord Type: " << (int)m_sourceChordType << std::endl;
 }
 
 void SFF2Parser::parseCtab(const char* data, uint32_t length) {
@@ -252,9 +270,13 @@ void SFF2Parser::parseCtab(const char* data, uint32_t length) {
     rule.noteLimitLow = static_cast<uint8_t>(data[13]);
     rule.noteLimitHigh = static_cast<uint8_t>(data[14]);
     rule.retriggerRule = static_cast<uint8_t>(data[15]);
+    rule.ntr = static_cast<uint8_t>(data[16]);
+    rule.ntt = static_cast<uint8_t>(data[17]);
+    rule.sourceRoot = m_sourceRoot;
+    rule.sourceChordType = m_sourceChordType;
 
     // Store the rest of the raw bytes
-    for (uint32_t i = 16; i < length; i++) {
+    for (uint32_t i = 18; i < length; i++) {
         rule.rawRuleBytes.push_back(static_cast<uint8_t>(data[i]));
     }
 
@@ -265,7 +287,8 @@ void SFF2Parser::parseCtab(const char* data, uint32_t length) {
               << " | Track: " << rule.trackName 
               << " (Ch " << (int)rule.destChannel + 1 << ")"
               << " | Src: " << (int)rule.sourceChannel + 1
-              << " | HighKey: " << std::hex << (int)rule.highKey << std::dec << std::endl;
+              << " | HighKey: " << std::hex << (int)rule.highKey << std::dec
+              << " | NTR: " << (int)rule.ntr << " | NTT: " << (int)rule.ntt << std::endl;
 }
 
 } // namespace engine

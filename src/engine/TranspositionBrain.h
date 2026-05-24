@@ -13,7 +13,7 @@ public:
     int calculateTransposition(int sourceNote, const Chord& liveChord, const CasmRule& rule);
 
 private:
-    int applyHighKey(int note, int highKey);
+    int applyHighKey(int note, int rootNote, int highKey);
     int applyNoteLimits(int note, int limitLow, int limitHigh);
 };
 

@@ -39,6 +39,10 @@ private:
 
     // 2D Array to track exact transposed note pitches [channel][original_note]
     int m_playingNotes[16][128];
+
+    // Cache for Bank Select MSB/LSB per destination channel
+    uint8_t m_cachedMSB[16];
+    uint8_t m_cachedLSB[16];
 };
 
 } // namespace engine
