@@ -90,7 +90,8 @@ void Sequencer::setSection(const std::string& sectionName) {
                 std::string trackName = "";
                 
                 for (const auto& rule : rules) {
-                    if (rule.destChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
+                    // FIX: Match the event's channel against rule.sourceChannel!
+                    if (rule.sourceChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
                         if (rule.trackName.find("CC") != std::string::npos) continue;
                         destChannel = rule.destChannel;
                         trackName = rule.trackName;
@@ -138,6 +139,11 @@ void Sequencer::tick(uint32_t currentTick) {
         // Stop all hanging notes before looping!
         for (int ch = 0; ch < 16; ch++) {
             m_midiOut.sendControlChange(ch, 123, 0); // All Notes Off CC
+
+            // FIX: Clear the note memory so the new loop starts fresh!
+            for (int n = 0; n < 128; n++) {
+                m_playingNotes[ch][n] = -1; 
+            }
         }
         
         m_relativeTick = m_sectionStartTick;
@@ -173,7 +179,8 @@ void Sequencer::tick(uint32_t currentTick) {
         CasmRule matchedRule;
         
         for (const auto& rule : rules) {
-            if (rule.destChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
+            // FIX: Match the event's channel against rule.sourceChannel!
+            if (rule.sourceChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
                 if (rule.trackName.find("CC") != std::string::npos) continue;
                 destChannel = rule.destChannel;
                 trackName = rule.trackName;
@@ -200,6 +207,14 @@ void Sequencer::tick(uint32_t currentTick) {
             if (type == 0x90 && velocity > 0) {
                 int transposedNote = originalNote;
                 
+                bool isDrumTrack = (destChannel == 9 || destChannel == 8 || trackName.find("Rhy") != std::string::npos || trackName.find("dr") != std::string::npos);
+
+                // MUTING LOGIC: If no chord is held and it's not a drum track, skip this note!
+                if (m_lastValidChord.rootNote == -1 && !isDrumTrack) {
+                    m_eventIndex++;
+                    continue; // Skip sending the Note On
+                }
+
                 if (m_lastValidChord.rootNote != -1) {
                     transposedNote = m_transpositionBrain.calculateTransposition(originalNote, m_lastValidChord, matchedRule);
                 }
@@ -242,6 +257,15 @@ void Sequencer::tick(uint32_t currentTick) {
         
         m_eventIndex++;
     }
+}
+
+void Sequencer::clearNoteMemory() {
+    for (int ch = 0; ch < 16; ++ch) {
+        for (int n = 0; n < 128; ++n) {
+            m_playingNotes[ch][n] = -1;
+        }
+    }
+    m_lastValidChord.rootNote = -1;
 }
 
 } // namespace engine

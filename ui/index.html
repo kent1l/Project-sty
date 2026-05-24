@@ -18,58 +18,87 @@
             </div>
         </header>
 
-        <!-- Memory Banks -->
-        <section class="memory-banks">
-            <button class="bank-btn" data-bank="1">1</button>
-            <button class="bank-btn" data-bank="2">2</button>
-            <button class="bank-btn" data-bank="3">3</button>
-            <button class="bank-btn" data-bank="4">4</button>
-            <button class="bank-btn" data-bank="5">5</button>
-            <button class="bank-btn" data-bank="6">6</button>
-        </section>
-
-        <!-- Main Display -->
-        <section class="main-display">
-            <div class="glass-panel">
-                <div class="display-top">
-                    <div class="tempo-readout"><span id="tempo-val">120</span> BPM</div>
-                    <div class="section-readout" id="section-val">MAIN A</div>
-                </div>
-                <div class="chord-readout" id="chord-val">---</div>
-            </div>
-        </section>
-
-        <!-- Tempo Control -->
-        <section class="tempo-control">
-            <label for="tempo-slider">TEMPO</label>
-            <input type="range" id="tempo-slider" min="40" max="250" value="120">
-        </section>
-
-        <!-- Split Control -->
-        <section class="tempo-control">
-            <label for="split-slider" style="white-space: nowrap; width: 150px;">SPLIT: <span id="split-display-note" style="color: var(--accent-blue);">54</span> (<span id="split-display-name">F#2</span>)</label>
-            <input type="range" id="split-slider" min="36" max="72" value="54">
-        </section>
-
-        <!-- Arranger Controls -->
-        <section class="arranger-controls">
-            <div class="control-group">
-                <button class="ctrl-btn intro-btn" onclick="sendCmd('intro', 'A')">INTRO</button>
-                <button class="ctrl-btn ending-btn" onclick="sendCmd('ending', 'A')">ENDING</button>
-            </div>
+        <!-- Dashboard Grid Layout -->
+        <div class="dashboard-grid">
             
-            <div class="control-group main-vars">
-                <button class="ctrl-btn main-btn active" id="btn-main-a" onclick="sendCmd('main', 'A')">MAIN A</button>
-                <button class="ctrl-btn main-btn" id="btn-main-b" onclick="sendCmd('main', 'B')">MAIN B</button>
-                <button class="ctrl-btn main-btn" id="btn-main-c" onclick="sendCmd('main', 'C')">MAIN C</button>
-                <button class="ctrl-btn main-btn" id="btn-main-d" onclick="sendCmd('main', 'D')">MAIN D</button>
-            </div>
+            <!-- Left Sidebar: Main Engine controls -->
+            <aside class="left-panel">
+                <div class="panel-title">System Control</div>
+                <div class="panel-section">
+                    <button class="ctrl-btn start-btn" id="btn-start" onclick="sendCmd('start', '')">START / STOP</button>
+                </div>
+                
+                <div class="panel-title" style="margin-top: 15px;">Transitions</div>
+                <div class="panel-section double-btn">
+                    <button class="ctrl-btn intro-btn" onclick="sendCmd('intro', 'A')">INTRO</button>
+                    <button class="ctrl-btn ending-btn" onclick="sendCmd('ending', 'A')">ENDING</button>
+                </div>
+                
+                <div class="panel-section double-btn">
+                    <button class="ctrl-btn fill-btn" onclick="sendCmd('fill', '')">AUTO FILL</button>
+                    <button class="ctrl-btn break-btn" onclick="sendCmd('break', '')">BREAK</button>
+                </div>
+            </aside>
 
-            <div class="control-group">
-                <button class="ctrl-btn fill-btn" onclick="sendCmd('fill', '')">AUTO FILL</button>
-                <button class="ctrl-btn break-btn" onclick="sendCmd('break', '')">BREAK</button>
-            </div>
-        </section>
+            <!-- Center Panel: Live Display & Controls -->
+            <main class="center-panel">
+                <div class="main-display">
+                    <div class="glass-panel">
+                        <div class="display-top">
+                            <div class="tempo-readout"><span id="tempo-val">120</span> BPM</div>
+                            <div class="section-readout" id="section-val">MAIN A</div>
+                        </div>
+                        <div class="chord-readout" id="chord-val">---</div>
+                    </div>
+                </div>
+
+                <div class="sliders-panel">
+                    <div class="tempo-control">
+                        <label for="tempo-slider">TEMPO</label>
+                        <input type="range" id="tempo-slider" min="40" max="250" value="120">
+                    </div>
+
+                    <div class="tempo-control">
+                        <label for="split-slider" style="white-space: nowrap; width: 140px;">SPLIT: <span id="split-display-note" style="color: var(--accent-blue);">54</span> (<span id="split-display-name">F#2</span>)</label>
+                        <input type="range" id="split-slider" min="36" max="72" value="54">
+                    </div>
+                </div>
+            </main>
+
+            <!-- Right Sidebar: Memory Banks & Variations -->
+            <aside class="right-panel">
+                <div class="panel-title">Registration Memory</div>
+                <div class="memory-banks">
+                    <button class="bank-btn" data-bank="1">1</button>
+                    <button class="bank-btn" data-bank="2">2</button>
+                    <button class="bank-btn" data-bank="3">3</button>
+                    <button class="bank-btn" data-bank="4">4</button>
+                    <button class="bank-btn" data-bank="5">5</button>
+                    <button class="bank-btn" data-bank="6">6</button>
+                </div>
+
+                <div class="panel-title" style="margin-top: 15px;">Variation & Fill-In</div>
+                <div class="variation-matrix">
+                    <div class="var-row">
+                        <button class="ctrl-btn main-btn active" id="btn-main-a" onclick="sendCmd('main', 'A')">MAIN A</button>
+                        <button class="ctrl-btn fill-var-btn" id="btn-fill-a" onclick="sendCmd('fill', 'A')">FILL A</button>
+                    </div>
+                    <div class="var-row">
+                        <button class="ctrl-btn main-btn" id="btn-main-b" onclick="sendCmd('main', 'B')">MAIN B</button>
+                        <button class="ctrl-btn fill-var-btn" id="btn-fill-b" onclick="sendCmd('fill', 'B')">FILL B</button>
+                    </div>
+                    <div class="var-row">
+                        <button class="ctrl-btn main-btn" id="btn-main-c" onclick="sendCmd('main', 'C')">MAIN C</button>
+                        <button class="ctrl-btn fill-var-btn" id="btn-fill-c" onclick="sendCmd('fill', 'C')">FILL C</button>
+                    </div>
+                    <div class="var-row">
+                        <button class="ctrl-btn main-btn" id="btn-main-d" onclick="sendCmd('main', 'D')">MAIN D</button>
+                        <button class="ctrl-btn fill-var-btn" id="btn-fill-d" onclick="sendCmd('fill', 'D')">FILL D</button>
+                    </div>
+                </div>
+            </aside>
+
+        </div>
     </div>
     <script src="app.js"></script>
 </body>

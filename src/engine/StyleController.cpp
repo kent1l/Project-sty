@@ -58,6 +58,14 @@ void StyleController::buttonEnding(char variation) {
     std::cout << "[UI] Pressed Ending " << variation << " (Queued)" << std::endl;
 }
 
+void StyleController::stop() {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_currentSection = StyleSection::STOPPED;
+    m_queuedSection = StyleSection::STOPPED;
+    m_targetAfterFill = StyleSection::STOPPED;
+    std::cout << "[UI] Style Controller Stopped." << std::endl;
+}
+
 bool StyleController::processMeasureBoundary() {
     std::lock_guard<std::mutex> lock(m_mutex);
     bool changed = false;

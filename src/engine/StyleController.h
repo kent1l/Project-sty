@@ -24,6 +24,7 @@ public:
     void buttonMain(char variation);  // 'A', 'B', 'C', 'D'
     void buttonBreak();
     void buttonEnding(char variation); // 'A', 'B', 'C'
+    void stop();
 
     // Called by the MasterClock on the downbeat (tick 0 of a measure)
     // Returns true if the section changed

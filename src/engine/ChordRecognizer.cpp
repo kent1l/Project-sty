@@ -34,8 +34,8 @@ Chord ChordRecognizer::detectChord() {
     
     // STRICT FINGERED MODE: Require at least 3 notes. 
     // (Prevents muddy sound from accidental single/double key presses)
-    if (m_heldNotes.size() < 3) {
-        return chord; // Returns "No Chord" (Sequencer will hold previous valid chord)
+    if (m_heldNotes.size() < 2) { 
+        return chord; // Now allows 2-note chords to evaluate
     }
 
     // Convert MIDI notes (0-127) to pitch classes (0-11)

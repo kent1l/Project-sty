@@ -17,6 +17,7 @@ public:
 
     void setSection(const std::string& sectionName);
     void tick(uint32_t absoluteTick);
+    void clearNoteMemory();
 
 private:
     SFF2Parser& m_parser;

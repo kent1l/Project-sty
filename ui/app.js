@@ -1,24 +1,55 @@
 // WebSocket connection to C++ Engine
 let ws = null;
 let isConnected = false;
+let reconnectTimeout = null;
 
 function connectWebSocket() {
-    // We will host the websocket server on the C++ side on port 9090
+    // Clear any existing reconnect timeouts to prevent duplicate parallel loops
+    if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+    }
+
+    // Clean up existing WebSocket if any
+    if (ws) {
+        console.log("Cleaning up previous WebSocket connection...");
+        ws.onopen = null;
+        ws.onclose = null;
+        ws.onmessage = null;
+        try {
+            ws.close();
+        } catch (e) {
+            console.error("Error closing previous WebSocket:", e);
+        }
+        ws = null;
+    }
+
+    console.log("Attempting to connect to Arranger Engine...");
     ws = new WebSocket('ws://localhost:9090');
 
     ws.onopen = () => {
         isConnected = true;
         document.getElementById('connection-indicator').className = 'indicator connected';
         document.getElementById('connection-text').innerText = 'Connected to C++ Engine';
-        console.log("Connected to Arranger Engine");
+        console.log("Connected to Arranger Engine successfully.");
     };
 
     ws.onclose = () => {
         isConnected = false;
         document.getElementById('connection-indicator').className = 'indicator disconnected';
         document.getElementById('connection-text').innerText = 'Disconnected';
+        
+        // Clear handlers on this instance since we are done with it
+        if (ws) {
+            ws.onopen = null;
+            ws.onclose = null;
+            ws.onmessage = null;
+            ws = null;
+        }
+
         // Auto-reconnect every 2 seconds if the engine goes offline
-        setTimeout(connectWebSocket, 2000);
+        console.log("WebSocket closed. Scheduling reconnect in 2 seconds...");
+        reconnectTimeout = setTimeout(connectWebSocket, 2000);
     };
 
     ws.onmessage = (event) => {
@@ -43,12 +74,26 @@ function updateUI(data) {
         
         // Remove glow from all buttons
         document.querySelectorAll('.main-btn').forEach(btn => btn.classList.remove('active'));
+        document.querySelectorAll('.fill-var-btn').forEach(btn => btn.classList.remove('active'));
         
+        // Update START / STOP button active state
+        if (data.section === 'STOPPED') {
+            document.getElementById('btn-start').classList.remove('active');
+        } else {
+            document.getElementById('btn-start').classList.add('active');
+        }
+
         // Add glow to the currently active section
         if (data.section === 'Main A') document.getElementById('btn-main-a').classList.add('active');
         if (data.section === 'Main B') document.getElementById('btn-main-b').classList.add('active');
         if (data.section === 'Main C') document.getElementById('btn-main-c').classList.add('active');
         if (data.section === 'Main D') document.getElementById('btn-main-d').classList.add('active');
+
+        // Add glow to the currently active fill section
+        if (data.section === 'Fill In A') document.getElementById('btn-fill-a').classList.add('active');
+        if (data.section === 'Fill In B') document.getElementById('btn-fill-b').classList.add('active');
+        if (data.section === 'Fill In C') document.getElementById('btn-fill-c').classList.add('active');
+        if (data.section === 'Fill In D') document.getElementById('btn-fill-d').classList.add('active');
     }
     
     // Update tempo readout if the engine forces a tempo change (e.g. from loading a Memory Bank)

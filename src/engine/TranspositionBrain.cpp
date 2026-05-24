@@ -13,7 +13,8 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
     }
     
     // NEVER transpose the drum tracks! (Yamaha standardizes as Rhy1 / Rhy2)
-    if (rule.trackName.find("Rhy") != std::string::npos || 
+    if (rule.destChannel == 9 || rule.destChannel == 8 || // Protect Channels 10 & 9
+        rule.trackName.find("Rhy") != std::string::npos || 
         rule.trackName.find("rhy") != std::string::npos || 
         rule.trackName.find("dr") != std::string::npos || 
         rule.trackName.find("drum") != std::string::npos) {
@@ -30,9 +31,11 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
     // Apply Chord Type scale degree mapping (source is in C Major/Maj7)
     if (type == "m" || type == "m7" || type == "m9" || type == "m6" || type == "m(add9)" || type == "mM7" || type == "m7b5") {
         // Minor chords
-        if (sourcePitchClass == 4) { // Major 3rd -> Minor 3rd
+        if (sourcePitchClass == 4) { 
             mappedPitchClass = 3;
-        } else if (sourcePitchClass == 11) { // Major 7th -> Minor 7th / Major 7th
+        } else if (sourcePitchClass == 9) { // ADD THIS RULE
+            mappedPitchClass = 8; // Flatten Major 6th to Minor 6th
+        } else if (sourcePitchClass == 11) { 
             if (type == "mM7") mappedPitchClass = 11;
             else mappedPitchClass = 10;
         }
@@ -72,12 +75,11 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
     // If this track is the Bass, and the user played an inverted bass note (e.g. CMaj/E)
     // we override the root interval and transpose strictly to the Bass note.
     if (rule.trackName.find("bass") != std::string::npos && liveChord.bassNote != liveChord.rootNote) {
-        // Shift base of transposition to the bass note instead of root
-        int bassInterval = liveChord.bassNote - 0;
-        transposedNote = sourceNote + bassInterval;
-        
+        // Shift base of transposition to the bass note, but KEEP the scale mapping
+        transposedNote = (sourceOctave * 12) + mappedPitchClass + liveChord.bassNote;
+
         // Shift octaves down to keep it in the bass register
-        while (transposedNote > 45) { // MIDI Note 45 is roughly the top of standard bass
+        while (transposedNote > 45) { 
             transposedNote -= 12;
         }
     }

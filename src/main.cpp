@@ -145,6 +145,26 @@ int main(int argc, char* argv[]) {
         else if (cmd == "break") {
             styleController.buttonBreak();
         }
+        else if (cmd == "start") {
+            if (clock.isRunning()) {
+                clock.stop();
+                styleController.stop();
+                sequencer.clearNoteMemory();
+                for (int ch = 0; ch < 16; ch++) {
+                    midiOut.sendControlChange(ch, 123, 0);
+                }
+            } else {
+                styleController.buttonMain('A');
+                styleController.processMeasureBoundary();
+                sequencer.setSection(styleController.getCurrentSectionName());
+                clock.start();
+            }
+        }
+        else if (cmd == "fill") {
+            if (!val.empty()) {
+                styleController.buttonMain(val[0]);
+            }
+        }
     });
 
     if (wsServer.start(9090)) {
