@@ -14,6 +14,7 @@ Sequencer::Sequencer(SFF2Parser& parser, MidiOutput& midiOut, ChordRecognizer& c
         m_cachedLSB[ch] = 0;
         for (int n = 0; n < 128; ++n) {
             m_playingNotes[ch][n] = -1;
+            m_playingVelocities[ch][n] = 0;
         }
     }
 }
@@ -138,6 +139,79 @@ void Sequencer::setSection(const std::string& sectionName) {
 void Sequencer::tick(uint32_t currentTick) {
     if (m_currentSection.empty() || m_sectionEndTick <= m_sectionStartTick) return;
 
+    // --- Real-time Chord Retriggering ---
+    Chord currentChord = m_chordRecognizer.detectChord();
+    bool chordChanged = false;
+    if (currentChord.rootNote != -1) {
+        if (m_lastValidChord.rootNote == -1 || 
+            m_lastValidChord.rootNote != currentChord.rootNote || 
+            m_lastValidChord.type != currentChord.type) {
+            chordChanged = true;
+        }
+    }
+
+    if (chordChanged) {
+        std::cout << "[Sequencer] Real-time Chord Change: " 
+                  << (m_lastValidChord.rootNote == -1 ? "NONE" : m_lastValidChord.toString()) 
+                  << " -> " << currentChord.toString() << std::endl;
+                  
+        const auto& rules = m_parser.getCasmRules();
+        
+        for (int ch = 0; ch < 16; ++ch) {
+            for (int n = 0; n < 128; ++n) {
+                int oldTransposed = m_playingNotes[ch][n];
+                if (oldTransposed != -1) {
+                    CasmRule matchedRule;
+                    bool ruleFound = false;
+                    for (const auto& rule : rules) {
+                        if (rule.destChannel == ch && rule.appliedSections.find(m_currentSection) != std::string::npos) {
+                            if (rule.trackName.find("CC") != std::string::npos) continue;
+                            matchedRule = rule;
+                            ruleFound = true;
+                            break;
+                        }
+                    }
+                    
+                    if (ruleFound) {
+                        uint8_t rtr = matchedRule.retriggerRule;
+                        int velocity = m_playingVelocities[ch][n];
+                        
+                        m_midiOut.sendNoteOff(ch, oldTransposed);
+                        m_playingNotes[ch][n] = -1;
+                        
+                        if (rtr == 0) {
+                            // STOP: Keep note silent
+                        } else {
+                            // RETRIGGER or PITCH SHIFT (re-sound at transposed pitch)
+                            int newTransposed = m_transpositionBrain.calculateTransposition(n, currentChord, matchedRule);
+                            
+                            bool isGuitarOrBass = (matchedRule.trackName.find("Gtr") != std::string::npos || 
+                                                   matchedRule.trackName.find("gtr") != std::string::npos ||
+                                                   matchedRule.trackName.find("Guitar") != std::string::npos ||
+                                                   matchedRule.trackName.find("guitar") != std::string::npos ||
+                                                   matchedRule.trackName.find("Bass") != std::string::npos ||
+                                                   matchedRule.trackName.find("bass") != std::string::npos ||
+                                                   matchedRule.ntt == 4);
+                                                   
+                            if (isGuitarOrBass && newTransposed < 40) {
+                                continue;
+                            }
+                            
+                            if (!matchedRule.trackName.empty()) {
+                                std::string articulation;
+                                m_megaVoiceTranslator.translate(matchedRule.trackName, newTransposed, velocity, articulation);
+                            }
+                            
+                            m_playingNotes[ch][n] = newTransposed;
+                            m_midiOut.sendNoteOn(ch, newTransposed, velocity);
+                        }
+                    }
+                }
+            }
+        }
+        m_lastValidChord = currentChord;
+    }
+
     // Advance relative playhead by 1 clock pulse (since tick is called per master pulse)
     m_relativeTick++; 
     
@@ -149,6 +223,7 @@ void Sequencer::tick(uint32_t currentTick) {
             // FIX: Clear the note memory so the new loop starts fresh!
             for (int n = 0; n < 128; n++) {
                 m_playingNotes[ch][n] = -1; 
+                m_playingVelocities[ch][n] = 0;
             }
         }
         
@@ -256,6 +331,7 @@ void Sequencer::tick(uint32_t currentTick) {
                 
                 // Store exact transposed note in memory
                 m_playingNotes[destChannel][originalNote] = transposedNote;
+                m_playingVelocities[destChannel][originalNote] = velocity;
                 m_midiOut.sendNoteOn(destChannel, transposedNote, velocity);
             } 
             // Note Off (Type 0x80 OR Note On with 0 velocity)
@@ -266,6 +342,7 @@ void Sequencer::tick(uint32_t currentTick) {
                 if (noteToTurnOff != -1) {
                     m_midiOut.sendNoteOff(destChannel, noteToTurnOff);
                     m_playingNotes[destChannel][originalNote] = -1; // Clear memory
+                    m_playingVelocities[destChannel][originalNote] = 0;
                 }
             }
         } 
@@ -301,6 +378,7 @@ void Sequencer::clearNoteMemory() {
     for (int ch = 0; ch < 16; ++ch) {
         for (int n = 0; n < 128; ++n) {
             m_playingNotes[ch][n] = -1;
+            m_playingVelocities[ch][n] = 0;
         }
     }
     m_lastValidChord.rootNote = -1;

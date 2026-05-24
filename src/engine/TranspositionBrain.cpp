@@ -112,8 +112,12 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
 
     // Apply Chord Type scale degree mapping if playChord explicitly allows it
     if (rule.playChord != 0) {
-        if (rule.ntt == 1) {
-            // NTT-Specific: Melody tracks (strictly preserve scale degrees, bypass chord-tone snapping)
+        if (rule.ntt == 0) {
+            // Bypass table: Do NOT apply any major/minor third/sixth flattening.
+            mappedInterval = styleInterval;
+        }
+        else if (rule.ntt == 1 || rule.ntt == 3 || rule.ntt == 4) {
+            // NTT-Specific: Melody (1), Bass (3), and Guitar (4) (strictly preserve scale degrees, bypass chord-tone snapping)
             // 1. Map Thirds & Sixths
             if (isSourceMinor && !isLiveMinor) {
                 // Style was recorded in Minor (has minor third = 3), live is Major (needs major third = 4)
@@ -133,13 +137,14 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
             }
 
             // 2. Map Sevenths / Dominants
-            bool isLive7th = (type == "7" || type == "9" || type == "11" || type == "13" || type == "7b5" || type == "m7" || type == "m7b5");
-            if (rule.sourceChordType == 0x02 && isLive7th) { // Source is Maj7 (has 11), live is flat 7th (needs 10)
+            bool isLiveDominant = (type == "7" || type == "9" || type == "11" || type == "13" || type == "7b5");
+            bool isLiveFlat7 = isLiveDominant || (isLiveMinor && type != "mM7");
+            if (rule.sourceChordType == 0x02 && isLiveFlat7) { // Source is Maj7 (has 11), live is flat 7th (needs 10)
                 if (styleInterval == 11) {
                     mappedInterval = 10;
                 }
             }
-            else if ((rule.sourceChordType == 0x13 || rule.sourceChordType == 0x0A) && type == "Maj7") { // Source is 7th/min7 (has 10), live is Maj7 (needs 11)
+            else if ((rule.sourceChordType == 0x13 || rule.sourceChordType == 0x0A) && (type == "M7" || type == "M9" || type == "mM7")) { // Source is 7th/min7 (has 10), live is Maj7 (needs 11)
                 if (styleInterval == 10) {
                     mappedInterval = 11;
                 }
@@ -174,8 +179,8 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
                 else if (styleInterval == 11 && type == "7sus4") mappedInterval = 10;
             }
         }
-        else if (rule.ntt == 2 || rule.ntt == 3) {
-            // NTT-Specific: Chord & Bass tracks (apply aggressive scale-degree snapping logic to force passing notes into nearest valid chord tone)
+        else if (rule.ntt == 2) {
+            // NTT-Specific: Chord Pads (apply scale degree mapping + aggressive chord tone snapping)
             // 1. Map Thirds & Sixths
             if (isSourceMinor && !isLiveMinor) {
                 if (styleInterval == 3) {
@@ -193,13 +198,14 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
             }
 
             // 2. Map Sevenths / Dominants
-            bool isLive7th = (type == "7" || type == "9" || type == "11" || type == "13" || type == "7b5" || type == "m7" || type == "m7b5");
-            if (rule.sourceChordType == 0x02 && isLive7th) {
+            bool isLiveDominant = (type == "7" || type == "9" || type == "11" || type == "13" || type == "7b5");
+            bool isLiveFlat7 = isLiveDominant || (isLiveMinor && type != "mM7");
+            if (rule.sourceChordType == 0x02 && isLiveFlat7) {
                 if (styleInterval == 11) {
                     mappedInterval = 10;
                 }
             }
-            else if ((rule.sourceChordType == 0x13 || rule.sourceChordType == 0x0A) && type == "Maj7") {
+            else if ((rule.sourceChordType == 0x13 || rule.sourceChordType == 0x0A) && (type == "M7" || type == "M9" || type == "mM7")) {
                 if (styleInterval == 10) {
                     mappedInterval = 11;
                 }
@@ -238,7 +244,7 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
             mappedInterval = snapToNearestChordTone(mappedInterval, type);
         }
         else {
-            // Default transposition (e.g. Guitar/NTT 4 or other custom tables, no snap)
+            // Default/Fallback (no snapping)
             // 1. Map Thirds & Sixths
             if (isSourceMinor && !isLiveMinor) {
                 if (styleInterval == 3) {
@@ -255,13 +261,14 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
                 }
             }
 
-            bool isLive7th = (type == "7" || type == "9" || type == "11" || type == "13" || type == "7b5" || type == "m7" || type == "m7b5");
-            if (rule.sourceChordType == 0x02 && isLive7th) {
+            bool isLiveDominant = (type == "7" || type == "9" || type == "11" || type == "13" || type == "7b5");
+            bool isLiveFlat7 = isLiveDominant || (isLiveMinor && type != "mM7");
+            if (rule.sourceChordType == 0x02 && isLiveFlat7) {
                 if (styleInterval == 11) {
                     mappedInterval = 10;
                 }
             }
-            else if ((rule.sourceChordType == 0x13 || rule.sourceChordType == 0x0A) && type == "Maj7") {
+            else if ((rule.sourceChordType == 0x13 || rule.sourceChordType == 0x0A) && (type == "M7" || type == "M9" || type == "mM7")) {
                 if (styleInterval == 10) {
                     mappedInterval = 11;
                 }
@@ -306,13 +313,13 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
     // If this track is the Bass, and the user played an inverted bass note (e.g. CMaj/E)
     // we override the root interval and transpose strictly to the Bass note.
     if (rule.trackName.find("bass") != std::string::npos && liveChord.bassNote != liveChord.rootNote) {
-        if (sourcePitchClass == rule.sourceRoot) {
-            // Remap the base root note of the bassline to match the inverted bass note
-            transposedNote = (sourceOctave * 12) + liveChord.bassNote;
-        } else {
-            // The rest of the rhythmic bass pattern remains mathematically relative to the original root chord
-            transposedNote = (sourceOctave * 12) + mappedPitchClass + liveChord.rootNote;
-        }
+        // Transpose the ENTIRE bass pattern relative to the inverted bass note to preserve the melody shape
+        int bassShift = liveChord.bassNote - liveChord.rootNote;
+        if (bassShift < 0) bassShift += 12;
+
+        // Apply the shift to the already mapped pitch class
+        int shiftedPitchClass = (mappedPitchClass + bassShift) % 12;
+        transposedNote = (sourceOctave * 12) + shiftedPitchClass + liveChord.rootNote;
 
         // Shift octaves down to keep it in the bass register
         while (transposedNote > 45) { 

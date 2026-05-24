@@ -261,21 +261,19 @@ void SFF2Parser::parseSdec(const char* data, uint32_t length) {
 }
 
 void SFF2Parser::parseCtab(const char* data, uint32_t length) {
-    if (length < 27) return; // Ignore incomplete rules
+    if (length < 18) return; // Parameter block is 18 bytes
 
     CasmRule rule;
     rule.appliedSections = m_currentSections;
-    // FIX: data[0] is Source Channel, data[9] is Dest Channel
     rule.sourceChannel = static_cast<uint8_t>(data[0]);
     
-    // Extract the 8-character track name
+    // Extract 8-character track name (bytes 1 to 8)
     rule.trackName = std::string(data + 1, 8);
-    // Trim trailing spaces from the track name safely
     size_t lastChar = rule.trackName.find_last_not_of(" ");
     if (lastChar != std::string::npos) {
         rule.trackName.erase(lastChar + 1);
     } else {
-        rule.trackName.clear(); // Track name was entirely spaces
+        rule.trackName.clear();
     }
 
     rule.destChannel = static_cast<uint8_t>(data[9]);
@@ -295,14 +293,13 @@ void SFF2Parser::parseCtab(const char* data, uint32_t length) {
         rule.rawRuleBytes.push_back(static_cast<uint8_t>(data[i]));
     }
 
-    // Save the rule to the engine's memory
     m_casmRules.push_back(rule);
-
-    std::cout << "             [Stored Rule] " << rule.appliedSections 
+    
+    std::cout << "             [Stored CASM Rule] " << rule.appliedSections 
               << " | Track: " << rule.trackName 
               << " (Ch " << (int)rule.destChannel + 1 << ")"
               << " | Src: " << (int)rule.sourceChannel + 1
-              << " | HighKey: " << std::hex << (int)rule.highKey << std::dec
+              << " | HighKey: 0x" << std::hex << (int)rule.highKey << std::dec
               << " | NTR: " << (int)rule.ntr << " | NTT: " << (int)rule.ntt << std::endl;
 }
 
