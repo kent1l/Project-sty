@@ -1,4 +1,5 @@
 #include "StyleController.h"
+#include "Sequencer.h"
 
 namespace engine {
 
@@ -130,6 +131,14 @@ std::string StyleController::sectionToString(StyleSection section) const {
         case StyleSection::ENDING_B: return "Ending B";
         case StyleSection::ENDING_C: return "Ending C";
         default: return "Unknown";
+    }
+}
+
+void StyleController::onInputChordDetected(const Chord& newChord) {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    m_currentChord = newChord;
+    if (m_sequencer && m_sequencer->isPlaying()) {
+        m_sequencer->updateLiveChord(newChord);
     }
 }
 

@@ -7,23 +7,189 @@ namespace engine {
 
 Sequencer::Sequencer(SFF2Parser& parser, MidiOutput& midiOut, ChordRecognizer& chordRecognizer)
     : m_parser(parser), m_midiOut(midiOut), m_chordRecognizer(chordRecognizer),
-      m_sectionStartTick(0), m_sectionEndTick(0), m_relativeTick(0), m_eventIndex(0) {
+      m_sectionStartTick(0), m_sectionEndTick(0), m_relativeTick(0), m_eventIndex(0),
+      m_styleData(&parser), m_bassOutputChannel(10) {
     m_lastValidChord.rootNote = -1;
+    m_activeChord.rootNote = -1;
 
-    // Initialize note memory to -1 (empty) and caches to 0
     for (int ch = 0; ch < 16; ++ch) {
-        m_cachedMSB[ch] = 0;
-        m_cachedLSB[ch] = 0;
-        for (int n = 0; n < 128; ++n) {
-            m_playingNotes[ch][n] = -1;
-            m_playingVelocities[ch][n] = 0;
-        }
+        m_cachedMSB[ch]  = 0;
+        m_cachedLSB[ch]  = 0;
+        m_channelMap[ch] = static_cast<uint8_t>(ch); // Identity: no remapping by default
     }
 }
 
 Sequencer::~Sequencer() {}
 
+bool Sequencer::isPlaying() const {
+    return !m_currentSection.empty() && m_currentSection != "STOPPED";
+}
+
+void Sequencer::updateLiveChord(const Chord& newChord) {
+    std::lock_guard<std::mutex> lock(m_chordMutex);
+    
+    // --- CHORD LATCH: Only accept a new chord when a real one is detected.
+    // When rootNote == -1 it means the user just released keys (a "No Chord"
+    // release event from ChordRecognizer). We IGNORE this and keep playing
+    // the last valid chord so the bass & instruments don't cut off mid-loop.
+    if (newChord.rootNote == -1) {
+        return;
+    }
+
+    bool chordChanged = (m_activeChord.rootNote == -1 ||
+                         m_activeChord.rootNote != newChord.rootNote ||
+                         m_activeChord.type != newChord.type);
+
+    Chord oldChord = m_activeChord;
+    m_activeChord = newChord; // Only reached when newChord is valid
+
+    if (chordChanged && isPlaying()) {
+        std::cout << "[Sequencer] Real-time Chord Change: " 
+                  << (oldChord.rootNote == -1 ? "NONE" : oldChord.toString()) 
+                  << " -> " << newChord.toString() << std::endl;
+
+        // --- SMOOTH CHORD TRANSITION ---
+        // Phase 1: Calculate all new transpositions first.
+        // Phase 2: Send ALL note-offs for old pitches.
+        // Phase 3: Send ALL note-ons for new pitches.
+        // This two-phase approach prevents the clipping burst caused by
+        // simultaneously sounding old + new notes in the VST audio buffer.
+
+        struct RetrigEntry {
+            uint32_t trackingKey;
+            uint8_t  destChannel;
+            int      oldTransposed;
+            int      newTransposed;
+            int      velocity;
+            bool     shouldErase; // true = just kill, false = retrigger
+        };
+        std::vector<RetrigEntry> entries;
+
+        for (auto& pair : m_activeNoteMap) {
+            uint32_t trackingKey = pair.first;
+            int      oldTransposed = pair.second;
+
+            uint8_t channel      = (trackingKey >> 16) & 0x0F;
+            uint8_t originalNote = (trackingKey >> 8)  & 0xFF;
+
+            CasmRule matchedRule = m_styleData->getCasmRuleForChannel(m_currentSection, channel);
+            // Bass tracks always go to m_bassOutputChannel; others use the channel map
+            uint8_t  destChannel = isBassRule(matchedRule) ? m_bassOutputChannel
+                                                           : mapChannel(matchedRule.destChannel);
+            int      velocity    = m_activeVelocityMap[trackingKey];
+            uint8_t  rtr         = matchedRule.retriggerRule;
+
+            std::string lowerTrackName = matchedRule.trackName;
+            std::transform(lowerTrackName.begin(), lowerTrackName.end(), lowerTrackName.begin(), ::tolower);
+
+            bool isGuitar = (lowerTrackName.find("gtr")    != std::string::npos ||
+                             lowerTrackName.find("guitar") != std::string::npos ||
+                             matchedRule.ntt == 4);
+            bool isBass   = (lowerTrackName.find("bass") != std::string::npos ||
+                             lowerTrackName.find("bs")   != std::string::npos ||
+                             matchedRule.ntt == 3 ||
+                             destChannel == 10); // MIDI Ch 11 = index 10 = bass
+
+            RetrigEntry entry;
+            entry.trackingKey  = trackingKey;
+            entry.destChannel  = destChannel;
+            entry.oldTransposed = oldTransposed;
+            entry.velocity     = velocity;
+            entry.shouldErase  = false;
+
+            if (rtr == 0) {
+                // RTR=0: Stop — just kill the note
+                entry.newTransposed = oldTransposed;
+                entry.shouldErase   = true;
+            } else {
+                // RTR=1 (legato) or RTR>1 (retrigger): pitch-shift
+                int newTransposed = m_transpositionBrain.calculateTransposition(originalNote, m_activeChord, matchedRule);
+
+                if (isGuitar) {
+                    while (newTransposed < 40) newTransposed += 12;
+                    while (newTransposed > 84) newTransposed -= 12;
+                } else if (isBass) {
+                    while (newTransposed < 28) newTransposed += 12;
+                    while (newTransposed > 67) newTransposed -= 12;
+                }
+
+                if ((isGuitar && newTransposed < 40) || (isBass && newTransposed < 28)) {
+                    entry.shouldErase   = true;
+                    entry.newTransposed = oldTransposed;
+                } else {
+                    // Global velocity soft-limit: keep within 80-100 to prevent clipping
+                    if (velocity > 100) velocity = 100;
+                    if (velocity < 1)   velocity = 1;
+                    entry.velocity     = velocity;
+                    entry.newTransposed = newTransposed;
+                }
+
+                if (!matchedRule.trackName.empty()) {
+                    std::string articulation;
+                    m_megaVoiceTranslator.translate(matchedRule.trackName, entry.newTransposed, velocity, articulation);
+                }
+            }
+            entries.push_back(entry);
+        }
+
+        // Phase 2: Kill ALL old notes first (prevents polyphony clipping burst)
+        for (const auto& e : entries) {
+            m_midiOut.sendNoteOff(e.destChannel, e.oldTransposed);
+        }
+
+        // Phase 3: Start new notes (only for non-erased entries)
+        std::vector<uint32_t> keysToErase;
+        std::vector<std::pair<uint32_t, int>> keysToUpdate;
+
+        for (const auto& e : entries) {
+            if (e.shouldErase) {
+                keysToErase.push_back(e.trackingKey);
+            } else {
+                m_midiOut.sendNoteOn(e.destChannel, e.newTransposed, e.velocity);
+                keysToUpdate.push_back({e.trackingKey, e.newTransposed});
+            }
+        }
+
+        for (uint32_t key : keysToErase) {
+            m_activeNoteMap.erase(key);
+            m_activeVelocityMap.erase(key);
+        }
+        for (const auto& p : keysToUpdate) {
+            m_activeNoteMap[p.first] = p.second;
+        }
+    }
+}
+
+void Sequencer::killAllActiveNotes() {
+    // NOTE: This must NOT be called while m_chordMutex is already held.
+    // Callers from within a locked scope should use the internal version.
+    std::lock_guard<std::mutex> lock(m_chordMutex);
+    killAllActiveNotesLocked();
+}
+
+void Sequencer::killAllActiveNotesLocked() {
+    for (const auto& pair : m_activeNoteMap) {
+        uint32_t trackingKey   = pair.first;
+        int      transformedNote = pair.second;
+        uint8_t  srcChannel    = (trackingKey >> 16) & 0x0F;
+        CasmRule rule = m_styleData->getCasmRuleForChannel(m_currentSection, srcChannel);
+        // Bass tracks were sent to m_bassOutputChannel, so NoteOff must go there too
+        uint8_t outCh = isBassRule(rule) ? m_bassOutputChannel : mapChannel(rule.destChannel);
+        m_midiOut.sendNoteOff(outCh, transformedNote);
+    }
+    m_activeNoteMap.clear();
+    m_activeVelocityMap.clear();
+}
+
 void Sequencer::setSection(const std::string& sectionName) {
+    // --- FIX: Kill all active notes from the previous section FIRST ---
+    // This prevents instrument clash when switching between Main A-D patterns,
+    // ensuring no sustained notes from the old section bleed into the new one.
+    {
+        std::lock_guard<std::mutex> lock(m_chordMutex);
+        killAllActiveNotesLocked();
+    }
+
     m_currentSection = sectionName;
     const auto& events = m_parser.getMidiEvents();
     const auto& rules = m_parser.getCasmRules();
@@ -31,6 +197,11 @@ void Sequencer::setSection(const std::string& sectionName) {
     m_sectionStartTick = 0;
     m_sectionEndTick = 0;
     m_eventIndex = 0;
+    
+    if (sectionName == "STOPPED") {
+        std::cout << "[Sequencer] Sequencer Stopped." << std::endl;
+        return;
+    }
     
     // Find the section markers
     bool foundStart = false;
@@ -100,6 +271,14 @@ void Sequencer::setSection(const std::string& sectionName) {
     }
 
     // Second pass: Send the Program Changes and other Control Changes mapped through CASM
+    // Also build a diagnostic routing table so the user can see every track's output channel.
+    std::cout << "\n[Sequencer] === TRACK ROUTING for [" << sectionName << "] ==="
+              << "\n  Track Name      | CASM src | CASM dest | Output Ch (after remap)" << std::endl;
+    std::cout << "  ----------------+----------+-----------+------------------------" << std::endl;
+
+    std::string sectionLower = sectionName;
+    std::transform(sectionLower.begin(), sectionLower.end(), sectionLower.begin(), ::tolower);
+
     for (const auto& ev : events) {
         bool isSInt = (ev.absoluteTick < 100);
         bool isInSection = (ev.absoluteTick >= m_sectionStartTick && ev.absoluteTick < m_sectionEndTick);
@@ -109,200 +288,83 @@ void Sequencer::setSection(const std::string& sectionName) {
             uint8_t channel = ev.status & 0x0F;
             
             if (type == 0xC0 || type == 0xB0) {
-                // Find matching CASM rule for this channel and section
-                uint8_t destChannel = channel;
-                bool ruleMatched = false;
+                // Case-insensitive CASM rule lookup (mirrors getCasmRuleForChannel)
+                uint8_t casmDest  = channel;
+                bool ruleMatched  = false;
                 std::string trackName = "";
                 
                 for (const auto& rule : rules) {
-                    // FIX: Match the event's channel against rule.sourceChannel!
-                    if (rule.sourceChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
-                        if (rule.trackName.find("CC") != std::string::npos) continue;
-                        destChannel = rule.destChannel;
+                    if (rule.sourceChannel != channel) continue;
+                    if (rule.trackName.find("CC") != std::string::npos) continue;
+
+                    std::string rulesLower = rule.appliedSections;
+                    std::transform(rulesLower.begin(), rulesLower.end(), rulesLower.begin(), ::tolower);
+                    if (rulesLower.find(sectionLower) != std::string::npos) {
+                        casmDest  = rule.destChannel;
                         trackName = rule.trackName;
                         ruleMatched = true;
-                        break; // <--- CRITICAL FIX: Stop at the first valid rule
+                        break;
                     }
                 }
                 
                 if (ruleMatched) {
+                    // Build a temporary CasmRule for isBassRule detection
+                    CasmRule tempRule;
+                    tempRule.trackName = trackName;
+                    // Find ntt from the full rules vector
+                    for (const auto& r : rules) {
+                        if (r.sourceChannel == channel && r.trackName == trackName) {
+                            tempRule.ntt = r.ntt;
+                            break;
+                        }
+                    }
+                    // Bass tracks always go to m_bassOutputChannel; others use channel map
+                    uint8_t outCh = isBassRule(tempRule) ? m_bassOutputChannel
+                                                         : mapChannel(casmDest);
+
                     if (type == 0xC0) {
                         uint8_t program = ev.data1;
                         uint8_t bankMSB = channelMSB[channel];
                         uint8_t bankLSB = channelLSB[channel];
                         
-                        // Remap MegaVoice or proprietary patches to GM equivalents
                         m_megaVoiceTranslator.translatePatch(trackName, bankMSB, bankLSB, program);
                         
-                        // Flush Bank Select first
-                        m_midiOut.sendControlChange(destChannel, 0, bankMSB);
-                        m_midiOut.sendControlChange(destChannel, 32, bankLSB);
-                        // Cache the actual bank sent
-                        m_cachedMSB[destChannel] = bankMSB;
-                        m_cachedLSB[destChannel] = bankLSB;
-                        // Then Program Change
-                        m_midiOut.sendProgramChange(destChannel, program);
+                        m_midiOut.sendControlChange(outCh, 0, bankMSB);
+                        m_midiOut.sendControlChange(outCh, 32, bankLSB);
+                        m_cachedMSB[outCh] = bankMSB;
+                        m_cachedLSB[outCh] = bankLSB;
+                        m_midiOut.sendProgramChange(outCh, program);
                         
-                        std::cout << "[Sequencer] Flushed Channel setup: Track=" << trackName 
-                                  << " (Ch " << (int)destChannel + 1 << ") -> Bank: " 
-                                  << (int)bankMSB << ":" << (int)bankLSB 
-                                  << ", PC: " << (int)program << std::endl;
+                        // Print routing row (highlights bass in bold via marker)
+                        std::string bassTag = isBassRule(tempRule) ? " <<< BASS" : "";
+                        std::cout << "  " << trackName;
+                        for (int p = trackName.size(); p < 16; ++p) std::cout << ' ';
+                        std::cout << "| src ch" << (int)channel+1
+                                  << "  | casm ch" << (int)casmDest+1
+                                  << "  | >>> MIDI Ch " << (int)outCh+1
+                                  << "  (Bank " << (int)bankMSB << ":" << (int)bankLSB
+                                  << ", PC " << (int)program << ")" << bassTag << std::endl;
                     }
                     else if (type == 0xB0 && ev.data1 != 0 && ev.data1 != 32) {
-                        // Forward other general CCs (volume, pan, etc.)
-                        m_midiOut.sendControlChange(destChannel, ev.data1, ev.data2);
+                        m_midiOut.sendControlChange(outCh, ev.data1, ev.data2);
                     }
                 }
             }
         }
     }
+    std::cout << "[Sequencer] =========================================" << std::endl;
 }
 
 void Sequencer::tick(uint32_t currentTick) {
-    if (m_currentSection.empty() || m_sectionEndTick <= m_sectionStartTick) return;
-
-    // --- Real-time Chord Retriggering ---
-    Chord currentChord = m_chordRecognizer.detectChord();
-    bool chordChanged = false;
-    if (currentChord.rootNote != -1) {
-        if (m_lastValidChord.rootNote == -1 || 
-            m_lastValidChord.rootNote != currentChord.rootNote || 
-            m_lastValidChord.type != currentChord.type) {
-            chordChanged = true;
-        }
-    }
-
-    if (chordChanged) {
-        std::cout << "[Sequencer] Real-time Chord Change: " 
-                  << (m_lastValidChord.rootNote == -1 ? "NONE" : m_lastValidChord.toString()) 
-                  << " -> " << currentChord.toString() << std::endl;
-                  
-        const auto& rules = m_parser.getCasmRules();
-        
-        for (int ch = 0; ch < 16; ++ch) {
-            for (int n = 0; n < 128; ++n) {
-                int oldTransposed = m_playingNotes[ch][n];
-                if (oldTransposed != -1) {
-                    CasmRule matchedRule;
-                    bool ruleFound = false;
-                    for (const auto& rule : rules) {
-                        std::string ruleSectionsLower = rule.appliedSections;
-                        std::string currentSectionLower = m_currentSection;
-                        std::transform(ruleSectionsLower.begin(), ruleSectionsLower.end(), ruleSectionsLower.begin(), ::tolower);
-                        std::transform(currentSectionLower.begin(), currentSectionLower.end(), currentSectionLower.begin(), ::tolower);
-                        if (rule.destChannel == ch && ruleSectionsLower.find(currentSectionLower) != std::string::npos) {
-                            if (rule.trackName.find("CC") != std::string::npos) continue;
-                            matchedRule = rule;
-                            ruleFound = true;
-                            break;
-                        }
-                    }
-                    
-                    if (ruleFound) {
-                        uint8_t rtr = matchedRule.retriggerRule;
-                        int velocity = m_playingVelocities[ch][n];
-                        
-                        std::string lowerRuleTrack = matchedRule.trackName;
-                        std::transform(lowerRuleTrack.begin(), lowerRuleTrack.end(), lowerRuleTrack.begin(), ::tolower);
-                        
-                        bool isGuitar = (lowerRuleTrack.find("gtr") != std::string::npos || 
-                                         lowerRuleTrack.find("guitar") != std::string::npos ||
-                                         matchedRule.ntt == 4);
-                                         
-                        bool isBass = (lowerRuleTrack.find("bass") != std::string::npos || 
-                                       lowerRuleTrack.find("bs") != std::string::npos ||
-                                       matchedRule.ntt == 3);
-                        
-                        if (rtr == 0) {
-                            // STOP: Kill the old note
-                            m_midiOut.sendNoteOff(ch, oldTransposed);
-                            m_playingNotes[ch][n] = -1;
-                            m_playingVelocities[ch][n] = 0;
-                        } 
-                        else if (rtr == 1) {
-                            // PITCH SHIFT / LEGATO: Overlap new Note On before old Note Off for smooth VST legato transitions
-                            int newTransposed = m_transpositionBrain.calculateTransposition(n, currentChord, matchedRule);
-                            
-                            // Fold notes to stay inside VST physical playable range
-                            if (isGuitar) {
-                                while (newTransposed < 40) newTransposed += 12;
-                                while (newTransposed > 84) newTransposed -= 12;
-                            }
-                            else if (isBass) {
-                                while (newTransposed < 28) newTransposed += 12;
-                                while (newTransposed > 51) newTransposed -= 12;
-                            }
-                                                   
-                            if ((isGuitar && newTransposed < 40) || (isBass && newTransposed < 28)) {
-                                m_midiOut.sendNoteOff(ch, oldTransposed);
-                                m_playingNotes[ch][n] = -1;
-                                m_playingVelocities[ch][n] = 0;
-                                continue;
-                            }
-                            
-                            // Translate Megavoice articulations if any
-                            if (!matchedRule.trackName.empty()) {
-                                std::string articulation;
-                                m_megaVoiceTranslator.translate(matchedRule.trackName, newTransposed, velocity, articulation);
-                            }
-                            
-                            // Trigger overlapping legato note On first
-                            m_midiOut.sendNoteOn(ch, newTransposed, velocity);
-                            // Turn off the old note immediately after to trigger smooth legato glide/hammer-on
-                            m_midiOut.sendNoteOff(ch, oldTransposed);
-                            
-                            m_playingNotes[ch][n] = newTransposed;
-                        }
-                        else {
-                            // RETRIGGER (RTR 3): Direct restrike with hard note-off and note-on
-                            int newTransposed = m_transpositionBrain.calculateTransposition(n, currentChord, matchedRule);
-                            
-                            if (isGuitar) {
-                                while (newTransposed < 40) newTransposed += 12;
-                                while (newTransposed > 84) newTransposed -= 12;
-                            }
-                            else if (isBass) {
-                                while (newTransposed < 28) newTransposed += 12;
-                                while (newTransposed > 51) newTransposed -= 12;
-                            }
-                                                   
-                            if ((isGuitar && newTransposed < 40) || (isBass && newTransposed < 28)) {
-                                m_midiOut.sendNoteOff(ch, oldTransposed);
-                                m_playingNotes[ch][n] = -1;
-                                m_playingVelocities[ch][n] = 0;
-                                continue;
-                            }
-                            
-                            if (!matchedRule.trackName.empty()) {
-                                std::string articulation;
-                                m_megaVoiceTranslator.translate(matchedRule.trackName, newTransposed, velocity, articulation);
-                            }
-                            
-                            m_midiOut.sendNoteOff(ch, oldTransposed);
-                            m_midiOut.sendNoteOn(ch, newTransposed, velocity);
-                            
-                            m_playingNotes[ch][n] = newTransposed;
-                        }
-                    }
-                }
-            }
-        }
-        m_lastValidChord = currentChord;
-    }
+    if (!isPlaying()) return;
 
     // Advance relative playhead by 1 clock pulse (since tick is called per master pulse)
     m_relativeTick++; 
     
     if (m_relativeTick >= m_sectionEndTick) {
-        // Stop all hanging notes before looping!
-        for (int ch = 0; ch < 16; ch++) {
-            m_midiOut.sendControlChange(ch, 123, 0); // All Notes Off CC
-
-            // FIX: Clear the note memory so the new loop starts fresh!
-            for (int n = 0; n < 128; n++) {
-                m_playingNotes[ch][n] = -1; 
-                m_playingVelocities[ch][n] = 0;
-            }
+        {
+            std::lock_guard<std::mutex> lock(m_chordMutex);
+            killAllActiveNotesLocked();
         }
         
         m_relativeTick = m_sectionStartTick;
@@ -317,164 +379,186 @@ void Sequencer::tick(uint32_t currentTick) {
         std::cout << "\n[Sequencer] Looping Section: " << m_currentSection << std::endl;
     }
     
-    // Debug: Print current chord every downbeat (tick 0 of a measure)
+    // Debug: Print active chord every downbeat (tick 0 of a measure)
     if (m_relativeTick % 1920 == 0) {
-        std::cout << "[Sequencer] Beat " << (m_relativeTick / 1920) + 1 << " | Current Target Chord: " << m_chordRecognizer.detectChord().toString() << std::endl;
+        Chord activeChordCopy;
+        {
+            std::lock_guard<std::mutex> lock(m_chordMutex);
+            activeChordCopy = m_activeChord;
+        }
+        std::cout << "[Sequencer] Beat " << (m_relativeTick / 1920) + 1 
+                  << " | Current Target Chord: " << activeChordCopy.toString() << std::endl;
     }
 
     const auto& events = m_parser.getMidiEvents();
-    const auto& rules = m_parser.getCasmRules();
     
     while (m_eventIndex < events.size() && events[m_eventIndex].absoluteTick <= m_relativeTick) {
         const MidiEvent& ev = events[m_eventIndex];
         
-        uint8_t type = ev.status & 0xF0;
-        uint8_t channel = ev.status & 0x0F;
+        uint8_t status = ev.status;
+        uint8_t type = status & 0xF0;
+        uint8_t channel = status & 0x0F;
         
-        // 1. CASM Channel Mapping (Applies to all events)
-        uint8_t destChannel = channel;
-        std::string trackName = "";
-        bool ruleMatched = false;
-        CasmRule matchedRule;
-        
-        for (const auto& rule : rules) {
-            std::string ruleSectionsLower = rule.appliedSections;
-            std::string currentSectionLower = m_currentSection;
-            std::transform(ruleSectionsLower.begin(), ruleSectionsLower.end(), ruleSectionsLower.begin(), ::tolower);
-            std::transform(currentSectionLower.begin(), currentSectionLower.end(), currentSectionLower.begin(), ::tolower);
-            // Match the event's channel against rule.sourceChannel!
-            if (rule.sourceChannel == channel && ruleSectionsLower.find(currentSectionLower) != std::string::npos) {
-                if (rule.trackName.find("CC") != std::string::npos) continue;
-                destChannel = rule.destChannel;
-                trackName = rule.trackName;
-                matchedRule = rule;
-                ruleMatched = true;
-                break; // <--- CRITICAL FIX: Stop at the first valid rule
-            }
-        }
-        
-        if (!ruleMatched) {
+        CasmRule channelRule = m_styleData->getCasmRuleForChannel(m_currentSection, channel);
+
+        // 5. Bypass Rules for Global Data
+        if (type == 0xE0) {
+            m_midiOut.sendPitchBend(mapChannel(channelRule.destChannel), ev.data1, ev.data2);
             m_eventIndex++;
             continue;
         }
-
-        if (type == 0x90 || type == 0x80) {
+        else if (type == 0xB0) {
+            uint8_t outCh = mapChannel(channelRule.destChannel);
+            m_midiOut.sendControlChange(outCh, ev.data1, ev.data2);
+            if (ev.data1 == 0) {
+                m_cachedMSB[outCh] = ev.data2;
+            } else if (ev.data1 == 32) {
+                m_cachedLSB[outCh] = ev.data2;
+            }
+            m_eventIndex++;
+            continue;
+        }
+        else if (type == 0xC0) {
+            uint8_t outCh   = mapChannel(channelRule.destChannel);
+            uint8_t program = ev.data1;
+            uint8_t bankMSB = m_cachedMSB[outCh];
+            uint8_t bankLSB = m_cachedLSB[outCh];
+            m_megaVoiceTranslator.translatePatch(channelRule.trackName, bankMSB, bankLSB, program);
+            
+            m_cachedMSB[outCh] = bankMSB;
+            m_cachedLSB[outCh] = bankLSB;
+            
+            m_midiOut.sendControlChange(outCh, 0, bankMSB);
+            m_midiOut.sendControlChange(outCh, 32, bankLSB);
+            m_midiOut.sendProgramChange(outCh, program);
+            m_eventIndex++;
+            continue;
+        }
+        else if (type == 0xF0) {
+            m_eventIndex++;
+            continue;
+        }
+        
+        // 3. Note-On Interception Hook
+        if (type == 0x90 && ev.data2 > 0) {
             int originalNote = ev.data1;
             int velocity = ev.data2;
             
-            Chord currentChord = m_chordRecognizer.detectChord();
-            if (currentChord.rootNote != -1) {
-                m_lastValidChord = currentChord; // Update memory!
+            // --- FIX: Use m_activeChord (updated via chord callback) instead of polling
+            // detectChord() directly. This ensures chords played in the left-hand zone
+            // (C0 to split point) are always recognized and drive the bass + all patterns.
+            Chord activeChordCopy;
+            {
+                std::lock_guard<std::mutex> lock(m_chordMutex);
+                activeChordCopy = m_activeChord;
             }
             
-            // Note On
-            if (type == 0x90 && velocity > 0) {
-                int transposedNote = originalNote;
-                
-                bool isDrumTrack = (destChannel == 9 || destChannel == 8 || trackName.find("Rhy") != std::string::npos || trackName.find("dr") != std::string::npos);
+            bool isDrumTrack = (channelRule.destChannel == 9 || channelRule.destChannel == 8 || 
+                                channelRule.trackName.find("Rhy") != std::string::npos || 
+                                channelRule.trackName.find("dr") != std::string::npos);
 
-                // MUTING LOGIC: If no chord is held and it's not a drum track, skip this note!
-                if (m_lastValidChord.rootNote == -1 && !isDrumTrack) {
-                    m_eventIndex++;
-                    continue; // Skip sending the Note On
-                }
-
-                std::string lowerTrackName = trackName;
-                std::transform(lowerTrackName.begin(), lowerTrackName.end(), lowerTrackName.begin(), ::tolower);
-                
-                bool isGuitar = (lowerTrackName.find("gtr") != std::string::npos || 
-                                 lowerTrackName.find("guitar") != std::string::npos ||
-                                 matchedRule.ntt == 4);
-                                 
-                bool isBass = (lowerTrackName.find("bass") != std::string::npos || 
-                               lowerTrackName.find("bs") != std::string::npos ||
-                               matchedRule.ntt == 3);
- 
-                // Task 1: VST Velocity Clamping (Guitar & Bass tracks)
-                // Cap velocity at 100 for normal notes (velocity < 115). High-velocity triggers are processed in MegaVoiceTranslator.
-                if ((isGuitar || isBass) && velocity < 115 && velocity > 100) {
-                    velocity = 100;
-                }
- 
-                if (m_lastValidChord.rootNote != -1) {
-                    transposedNote = m_transpositionBrain.calculateTransposition(originalNote, m_lastValidChord, matchedRule);
-                }
-                
-                // Fold notes to stay inside VST physical playable range
-                if (isGuitar) {
-                    while (transposedNote < 40) {
-                        transposedNote += 12;
-                    }
-                    while (transposedNote > 84) {
-                        transposedNote -= 12;
-                    }
-                }
-                else if (isBass) {
-                    while (transposedNote < 28) {
-                        transposedNote += 12;
-                    }
-                    while (transposedNote > 51) {
-                        transposedNote -= 12;
-                    }
-                }
-                
-                // Task 2: VST Keyswitch Filtering (Guitar & Bass tracks)
-                if (isGuitar && transposedNote < 40) {
-                    m_playingNotes[destChannel][originalNote] = -1;
-                    m_eventIndex++;
-                    continue; // Intercept and discard this Note On
-                }
-                if (isBass && transposedNote < 28) {
-                    m_playingNotes[destChannel][originalNote] = -1;
-                    m_eventIndex++;
-                    continue; // Intercept and discard this Note On
-                }
-
-                // MegaVoice Translation
-                if (!trackName.empty()) {
-                    std::string articulation;
-                    m_megaVoiceTranslator.translate(trackName, transposedNote, velocity, articulation);
-                }
-                
-                // Store exact transposed note in memory
-                m_playingNotes[destChannel][originalNote] = transposedNote;
-                m_playingVelocities[destChannel][originalNote] = velocity;
-                m_midiOut.sendNoteOn(destChannel, transposedNote, velocity);
-            } 
-            // Note Off (Type 0x80 OR Note On with 0 velocity)
-            else {
-                int noteToTurnOff = m_playingNotes[destChannel][originalNote];
-                
-                // Only send Note Off if we actually mapped and started this note
-                if (noteToTurnOff != -1) {
-                    m_midiOut.sendNoteOff(destChannel, noteToTurnOff);
-                    m_playingNotes[destChannel][originalNote] = -1; // Clear memory
-                    m_playingVelocities[destChannel][originalNote] = 0;
-                }
+            // Mute non-drum notes if no chord is held
+            if (activeChordCopy.rootNote == -1 && !isDrumTrack) {
+                m_eventIndex++;
+                continue;
             }
-        } 
-        else if (type == 0xB0) {
-            // Forward Control Changes (including CC0 and CC32 Bank Selects) unaltered
-            m_midiOut.sendControlChange(destChannel, ev.data1, ev.data2);
-            if (ev.data1 == 0) {
-                m_cachedMSB[destChannel] = ev.data2;
-            } else if (ev.data1 == 32) {
-                m_cachedLSB[destChannel] = ev.data2;
+
+            std::string lowerTrackName = channelRule.trackName;
+            std::transform(lowerTrackName.begin(), lowerTrackName.end(), lowerTrackName.begin(), ::tolower);
+
+            bool isGuitar = (lowerTrackName.find("gtr") != std::string::npos || 
+                             lowerTrackName.find("guitar") != std::string::npos ||
+                             channelRule.ntt == 4);
+                             
+            bool isBass = (lowerTrackName.find("bass") != std::string::npos || 
+                           lowerTrackName.find("bs")   != std::string::npos ||
+                           channelRule.ntt == 3 ||
+                           channelRule.destChannel == 10); // MIDI Ch 11 = index 10 = bass
+
+            // Global velocity soft-limit: prevent clipping from many simultaneous voices
+            // High-velocity articulation triggers (>= 115) are exempt from limiting
+            if (velocity < 115 && velocity > 100) {
+                velocity = 100;
             }
+
+            int transformedNote = originalNote;
+            if (!isDrumTrack) {
+                transformedNote = m_transpositionBrain.calculateTransposition(originalNote, activeChordCopy, channelRule);
+            }
+            
+            if (transformedNote == -1) {
+                m_eventIndex++;
+                continue;
+            }
+
+            // Fold notes to stay inside VST physical playable range
+            if (isGuitar) {
+                while (transformedNote < 40) transformedNote += 12;
+                while (transformedNote > 84) transformedNote -= 12;
+            }
+            else if (isBass) {
+                while (transformedNote < 28) transformedNote += 12;
+                while (transformedNote > 67) transformedNote -= 12;
+            }
+            
+            // Intercept and discard keyswitches
+            if (isGuitar && transformedNote < 40) {
+                m_eventIndex++;
+                continue;
+            }
+            if (isBass && transformedNote < 28) {
+                m_eventIndex++;
+                continue;
+            }
+
+            if (!channelRule.trackName.empty()) {
+                std::string articulation;
+                m_megaVoiceTranslator.translate(channelRule.trackName, transformedNote, velocity, articulation);
+            }
+            
+            {
+                std::lock_guard<std::mutex> lock(m_chordMutex);
+                uint32_t trackingKey = (channel << 16) | (originalNote << 8);
+                m_activeNoteMap[trackingKey] = transformedNote;
+                m_activeVelocityMap[trackingKey] = velocity;
+            }
+
+            // Route bass tracks to m_bassOutputChannel regardless of CASM destChannel
+            uint8_t outCh = isBassRule(channelRule) ? m_bassOutputChannel
+                                                    : mapChannel(channelRule.destChannel);
+
+            std::cout << "[Tick] NoteOn: Track='" << channelRule.trackName
+                      << "' srcCh=" << (int)channel+1
+                      << " casmDest=" << (int)channelRule.destChannel+1
+                      << " outCh=" << (int)outCh+1
+                      << " note=" << (int)transformedNote
+                      << " vel=" << (int)velocity << std::endl;
+
+            m_midiOut.sendNoteOn(outCh, transformedNote, velocity);
         }
-        else if (type == 0xC0) {
-            uint8_t program = ev.data1;
-            uint8_t bankMSB = m_cachedMSB[destChannel];
-            uint8_t bankLSB = m_cachedLSB[destChannel];
-            m_megaVoiceTranslator.translatePatch(trackName, bankMSB, bankLSB, program);
+        // 4. Note-Off Alignment Hook
+        else if (type == 0x80 || (type == 0x90 && ev.data2 == 0)) {
+            int originalNote = ev.data1;
+            uint32_t trackingKey = (channel << 16) | (originalNote << 8);
             
-            // Keep caches updated in case translatePatch modified them
-            m_cachedMSB[destChannel] = bankMSB;
-            m_cachedLSB[destChannel] = bankLSB;
+            int noteToTurnOff = -1;
+            {
+                std::lock_guard<std::mutex> lock(m_chordMutex);
+                auto it = m_activeNoteMap.find(trackingKey);
+                if (it != m_activeNoteMap.end()) {
+                    noteToTurnOff = it->second;
+                    m_activeNoteMap.erase(it);
+                    m_activeVelocityMap.erase(trackingKey);
+                }
+            }
             
-            m_midiOut.sendControlChange(destChannel, 0, bankMSB);
-            m_midiOut.sendControlChange(destChannel, 32, bankLSB);
-            m_midiOut.sendProgramChange(destChannel, program);
+            uint8_t outCh = isBassRule(channelRule) ? m_bassOutputChannel
+                                                    : mapChannel(channelRule.destChannel);
+            if (noteToTurnOff != -1) {
+                m_midiOut.sendNoteOff(outCh, noteToTurnOff);
+            } else {
+                m_midiOut.sendNoteOff(outCh, originalNote);
+            }
         }
         
         m_eventIndex++;
@@ -482,12 +566,7 @@ void Sequencer::tick(uint32_t currentTick) {
 }
 
 void Sequencer::clearNoteMemory() {
-    for (int ch = 0; ch < 16; ++ch) {
-        for (int n = 0; n < 128; ++n) {
-            m_playingNotes[ch][n] = -1;
-            m_playingVelocities[ch][n] = 0;
-        }
-    }
+    killAllActiveNotes();
     m_lastValidChord.rootNote = -1;
 }
 

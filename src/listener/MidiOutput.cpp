@@ -78,4 +78,13 @@ void MidiOutput::sendControlChange(uint8_t channel, uint8_t cc, uint8_t value) {
     m_midiOut->sendMessage(&message);
 }
 
+void MidiOutput::sendPitchBend(uint8_t channel, uint8_t lsb, uint8_t msb) {
+    if (!m_midiOut || !m_midiOut->isPortOpen()) return;
+    std::vector<unsigned char> message;
+    message.push_back(0xE0 | (channel & 0x0F));
+    message.push_back(lsb & 0x7F);
+    message.push_back(msb & 0x7F);
+    m_midiOut->sendMessage(&message);
+}
+
 } // namespace engine

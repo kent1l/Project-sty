@@ -22,6 +22,7 @@ public:
     void sendNoteOff(uint8_t channel, uint8_t note);
     void sendProgramChange(uint8_t channel, uint8_t program);
     void sendControlChange(uint8_t channel, uint8_t cc, uint8_t value);
+    void sendPitchBend(uint8_t channel, uint8_t lsb, uint8_t msb);
 
 private:
     std::unique_ptr<RtMidiOut> m_midiOut;

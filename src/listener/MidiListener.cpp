@@ -101,6 +101,9 @@ void MidiListener::handleMidiMessage(const std::vector<unsigned char>& message) 
 
     if (chordChanged) {
         Chord currentChord = m_chordRecognizer.detectChord();
+        if (m_chordCallback) {
+            m_chordCallback(currentChord);
+        }
         std::string newChordStr = currentChord.toString();
         
         // Only print if the chord actually changed to avoid spamming the console

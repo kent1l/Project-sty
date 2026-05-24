@@ -2,8 +2,11 @@
 #include <string>
 #include <iostream>
 #include <mutex>
+#include "ChordRecognizer.h"
 
 namespace engine {
+
+class Sequencer;
 
 enum class StyleSection {
     STOPPED,
@@ -31,12 +34,18 @@ public:
     bool processMeasureBoundary();
     
     std::string getCurrentSectionName() const;
+    
+    void setSequencer(Sequencer* sequencer) { m_sequencer = sequencer; }
+    void onInputChordDetected(const Chord& newChord);
 
 private:
     std::mutex m_mutex; // Protects state between UI thread and Clock thread
     StyleSection m_currentSection;
     StyleSection m_queuedSection;
     StyleSection m_targetAfterFill; // Where to go after a fill-in finishes
+    
+    Sequencer* m_sequencer = nullptr;
+    Chord m_currentChord;
     
     std::string sectionToString(StyleSection section) const;
 };

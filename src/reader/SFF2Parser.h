@@ -42,6 +42,7 @@ public:
     
     const std::vector<MidiEvent>& getMidiEvents() const { return m_midiEvents; }
     const std::vector<CasmRule>& getCasmRules() const { return m_casmRules; }
+    CasmRule getCasmRuleForChannel(const std::string& section, uint8_t channel) const;
     
 private:
     std::string m_currentSections;
