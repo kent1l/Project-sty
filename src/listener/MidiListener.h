@@ -36,12 +36,8 @@ private:
     std::unique_ptr<RtMidiIn> m_midiIn;
     ChordRecognizer m_chordRecognizer;
     std::string m_lastChordString;
-<<<<<<< HEAD
-    int m_splitPoint = 59; // Default to B2 (MIDI Note 59)
-=======
     std::function<void(const Chord&)> m_chordCallback;
-    int m_splitPoint = 54; // Default to F#2 (MIDI Note 54)
->>>>>>> a80a3fd96543fdb61a87ac9d023e9e7814cc9ade
+    int m_splitPoint = 59; // Default to B3 (MIDI Note 59) — everything at or below this is chord zone
 };
 
 } // namespace engine

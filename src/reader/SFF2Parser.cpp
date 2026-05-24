@@ -3,6 +3,8 @@
 #include <fstream>
 #include <vector>
 #include <cstring>
+#include <algorithm>
+#include <cctype>
 
 namespace engine {
 
@@ -321,25 +323,36 @@ void SFF2Parser::parseCtab(const char* data, uint32_t length) {
 }
 
 CasmRule SFF2Parser::getCasmRuleForChannel(const std::string& section, uint8_t channel) const {
+    // Build lowercase version of the requested section name once
+    std::string sectionLower = section;
+    std::transform(sectionLower.begin(), sectionLower.end(), sectionLower.begin(), ::tolower);
+
     for (const auto& rule : m_casmRules) {
-        if (rule.sourceChannel == channel && rule.appliedSections.find(section) != std::string::npos) {
-            if (rule.trackName.find("CC") != std::string::npos) continue;
+        if (rule.sourceChannel != channel) continue;
+        if (rule.trackName.find("CC") != std::string::npos) continue;
+
+        // Case-insensitive section match so "Main A" == "main a" etc.
+        std::string rulesLower = rule.appliedSections;
+        std::transform(rulesLower.begin(), rulesLower.end(), rulesLower.begin(), ::tolower);
+
+        if (rulesLower.find(sectionLower) != std::string::npos) {
             return rule;
         }
     }
-    // Return a default rule if not found
+
+    // Return a safe default rule — pass the note straight through unchanged
     CasmRule defaultRule;
-    defaultRule.sourceChannel = channel;
-    defaultRule.destChannel = channel;
-    defaultRule.playNote = 1;
-    defaultRule.playChord = 1;
-    defaultRule.highKey = 0xFF;
-    defaultRule.noteLimitLow = 0xFF;
-    defaultRule.noteLimitHigh = 0xFF;
-    defaultRule.retriggerRule = 0;
-    defaultRule.ntr = 0;
-    defaultRule.ntt = 0;
-    defaultRule.sourceRoot = 0;
+    defaultRule.sourceChannel  = channel;
+    defaultRule.destChannel    = channel;
+    defaultRule.playNote       = 1;
+    defaultRule.playChord      = 0;   // No chord adaptation on unknown tracks
+    defaultRule.highKey        = 0xFF;
+    defaultRule.noteLimitLow   = 0;   // No folding limits — pass everything
+    defaultRule.noteLimitHigh  = 127;
+    defaultRule.retriggerRule  = 1;   // Legato retrigger (least disruptive default)
+    defaultRule.ntr            = 0;
+    defaultRule.ntt            = 0;
+    defaultRule.sourceRoot     = 0;
     defaultRule.sourceChordType = 2;
     return defaultRule;
 }
