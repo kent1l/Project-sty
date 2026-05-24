@@ -222,10 +222,32 @@ void Sequencer::tick(uint32_t currentTick) {
                     continue; // Skip sending the Note On
                 }
 
+                bool isGuitarOrBass = (trackName.find("Gtr") != std::string::npos || 
+                                       trackName.find("gtr") != std::string::npos ||
+                                       trackName.find("Guitar") != std::string::npos ||
+                                       trackName.find("guitar") != std::string::npos ||
+                                       trackName.find("Bass") != std::string::npos ||
+                                       trackName.find("bass") != std::string::npos ||
+                                       matchedRule.ntt == 4);
+
+                // Task 1: VST Velocity Clamping (Guitar & Bass tracks)
+                // Cap velocity at 100 for normal notes (velocity < 115). High-velocity triggers are processed in MegaVoiceTranslator.
+                if (isGuitarOrBass && velocity < 115 && velocity > 100) {
+                    velocity = 100;
+                }
+
                 if (m_lastValidChord.rootNote != -1) {
                     transposedNote = m_transpositionBrain.calculateTransposition(originalNote, m_lastValidChord, matchedRule);
                 }
                 
+                // Task 2: VST Keyswitch Filtering (Guitar & Bass tracks)
+                // Intercept and discard any MIDI note that falls below E1 (MIDI Note 40)
+                if (isGuitarOrBass && transposedNote < 40) {
+                    m_playingNotes[destChannel][originalNote] = -1;
+                    m_eventIndex++;
+                    continue; // Intercept and discard this Note On
+                }
+
                 // MegaVoice Translation
                 if (!trackName.empty()) {
                     std::string articulation;

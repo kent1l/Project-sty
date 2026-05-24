@@ -1,6 +1,8 @@
 #include "MegaVoiceTranslator.h"
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <ctime>
 
 namespace engine {
 
@@ -43,6 +45,64 @@ bool MegaVoiceTranslator::translate(const std::string& trackName, int& note, int
     std::string lowerTrack = trackName;
     for (auto& c : lowerTrack) c = std::tolower(c);
     
+    bool isGuitar = (lowerTrack.find("gtr") != std::string::npos || 
+                     lowerTrack.find("gt") != std::string::npos || 
+                     lowerTrack.find("guitar") != std::string::npos);
+    bool isBass = (lowerTrack.find("bass") != std::string::npos || 
+                   lowerTrack.find("bs") != std::string::npos || 
+                   lowerTrack.find("ba") != std::string::npos);
+
+    // High-Velocity FX Translator (Ample Sound Translation for Guitar tracks)
+    if (isGuitar && velocity >= 115) {
+        int fxNote = 77;
+        std::string articulation = "Scratch";
+        
+        // Check track context (keywords in trackName)
+        if (lowerTrack.find("mute") != std::string::npos || lowerTrack.find("choke") != std::string::npos) {
+            // Mute context: Muting Noise, Hit Top (Mute), Scratch
+            int r = std::rand() % 3;
+            if (r == 0) {
+                fxNote = 79; // Muting Noise (G5)
+                articulation = "Muting Noise";
+            } else if (r == 1) {
+                fxNote = 90; // Hit Top (Mute) (F#6)
+                articulation = "Hit Top (Mute)";
+            } else {
+                fxNote = 77; // Scratch (F5)
+                articulation = "Scratch";
+            }
+        } else {
+            // Open/Standard context: Scratch, Muting Noise, Hit Top (Open), Hit Top (Mute)
+            int r = std::rand() % 4;
+            if (r == 0) {
+                fxNote = 77; // Scratch (F5)
+                articulation = "Scratch";
+            } else if (r == 1) {
+                fxNote = 79; // Muting Noise (G5)
+                articulation = "Muting Noise";
+            } else if (r == 2) {
+                fxNote = 89; // Hit Top (Open) (F6)
+                articulation = "Hit Top (Open)";
+            } else {
+                fxNote = 90; // Hit Top (Mute) (F#6)
+                articulation = "Hit Top (Mute)";
+            }
+        }
+        
+        note = fxNote;
+        velocity = 100; // Standard keyswitch velocity
+        outArticulation = "Ample " + articulation;
+        return true;
+    }
+
+    // Velocity Clamping for all normal notes (velocity < 115) on Guitar/Bass tracks
+    if ((isGuitar || isBass) && velocity < 115) {
+        if (velocity > 100) {
+            velocity = 100;
+        }
+    }
+
+    // Fallback to Yamaha proprietary MegaVoice translations
     auto it = m_rules.find(lowerTrack);
     if (it == m_rules.end()) {
         return false; // No MegaVoice rules exist for this track
@@ -57,11 +117,6 @@ bool MegaVoiceTranslator::translate(const std::string& trackName, int& note, int
                 // Completely swap the high-pitched Yamaha note for the VST Keyswitch
                 note = rule.keyswitchNote;
                 velocity = rule.keyswitchVelocity;
-            } else {
-                // Do NOT override the note here. 
-                // Let the original melody note pass through to the VST.
-                // (Note: True keyswitch injection requires sending two separate MIDI events 
-                // in the Sequencer, but this prevents deleting the musical note).
             }
             
             return true; // We successfully translated the MegaVoice!

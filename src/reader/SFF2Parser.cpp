@@ -235,9 +235,24 @@ void SFF2Parser::parseSdec(const char* data, uint32_t length) {
     m_currentSections = std::string(data, strLen);
 
     // If there is extra binary data, extract the source root and source chord type
+    bool valid = false;
     if (length >= strLen + 2) {
-        m_sourceRoot = static_cast<uint8_t>(data[length - 2]);
-        m_sourceChordType = static_cast<uint8_t>(data[length - 1]);
+        uint8_t root = static_cast<uint8_t>(data[length - 2]);
+        uint8_t chordType = static_cast<uint8_t>(data[length - 1]);
+        
+        // Strict bounds checking: root must be between 0 and 11 inclusive,
+        // and chordType should be within valid Yamaha SFF chord type range (typically <= 36)
+        if (root <= 11 && chordType <= 36) {
+            m_sourceRoot = root;
+            m_sourceChordType = chordType;
+            valid = true;
+        }
+    }
+
+    if (!valid) {
+        // Fallback safely to Yamaha standard default of 0 (C Major / Maj7)
+        m_sourceRoot = 0;
+        m_sourceChordType = 2;
     }
 
     std::cout << "          -> Section Context: " << m_currentSections 
