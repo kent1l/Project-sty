@@ -14,6 +14,7 @@ Sequencer::~Sequencer() {}
 void Sequencer::setSection(const std::string& sectionName) {
     m_currentSection = sectionName;
     const auto& events = m_parser.getMidiEvents();
+    const auto& rules = m_parser.getCasmRules();
     
     m_sectionStartTick = 0;
     m_sectionEndTick = 0;
@@ -44,33 +45,76 @@ void Sequencer::setSection(const std::string& sectionName) {
     m_relativeTick = m_sectionStartTick;
     std::cout << "\n[Sequencer] Jumped to Section: " << sectionName << " (Tick " << m_sectionStartTick << " to " << m_sectionEndTick << ")" << std::endl;
 
-    // IMPORTANT: Send all Style Initialization (SInt) Program Changes so it doesn't sound like a piano!
+    // Track the bank select MSB/LSB per channel to flush them alongside Program Changes
+    uint8_t channelMSB[16] = {0};
+    uint8_t channelLSB[16] = {0};
+
+    // First pass: scan for Bank Select CC0/CC32 to resolve the voice banks
     for (const auto& ev : events) {
-        if (ev.absoluteTick > 100) break; // SInt events are packed at the very beginning
-        uint8_t type = ev.status & 0xF0;
-        uint8_t channel = ev.status & 0x0F;
+        bool isSInt = (ev.absoluteTick < 100);
+        bool isInSection = (ev.absoluteTick >= m_sectionStartTick && ev.absoluteTick < m_sectionEndTick);
         
-        if (type == 0xC0 || type == 0xB0) {
-            uint8_t destChannel = channel;
-            // Map the initialization to the correct output channel based on CASM
-            for (const auto& rule : m_parser.getCasmRules()) {
-                if (rule.sourceChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
-                    // Ignore 'CC' hijack rules so the Program Change goes to the REAL instrument channel!
-                    if (rule.trackName.find("CC") != std::string::npos) continue;
-                    
-                    destChannel = rule.destChannel;
+        if (isSInt || isInSection) {
+            uint8_t type = ev.status & 0xF0;
+            uint8_t channel = ev.status & 0x0F;
+            if (type == 0xB0) {
+                if (ev.data1 == 0) {
+                    channelMSB[channel] = ev.data2;
+                } else if (ev.data1 == 32) {
+                    channelLSB[channel] = ev.data2;
                 }
             }
-            if (type == 0xC0) {
-                m_midiOut.sendProgramChange(destChannel, ev.data1);
-            }
-            if (type == 0xB0) {
-                // SANITIZE YAMAHA XG BANKS: FluidSynth crashes/defaults to Piano if it receives Yamaha proprietary banks.
-                // We force CC 0 (MSB) and CC 32 (LSB) to 0 to guarantee General MIDI fallback!
-                if (ev.data1 == 0 || ev.data1 == 32) {
-                    m_midiOut.sendControlChange(destChannel, ev.data1, 0); 
-                } else {
-                    m_midiOut.sendControlChange(destChannel, ev.data1, ev.data2);
+        }
+    }
+
+    // Second pass: Send the Program Changes and other Control Changes mapped through CASM
+    for (const auto& ev : events) {
+        bool isSInt = (ev.absoluteTick < 100);
+        bool isInSection = (ev.absoluteTick >= m_sectionStartTick && ev.absoluteTick < m_sectionEndTick);
+        
+        if (isSInt || isInSection) {
+            uint8_t type = ev.status & 0xF0;
+            uint8_t channel = ev.status & 0x0F;
+            
+            if (type == 0xC0 || type == 0xB0) {
+                // Find matching CASM rule for this channel and section
+                uint8_t destChannel = channel;
+                bool ruleMatched = false;
+                std::string trackName = "";
+                
+                for (const auto& rule : rules) {
+                    if (rule.sourceChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
+                        if (rule.trackName.find("CC") != std::string::npos) continue;
+                        destChannel = rule.destChannel;
+                        trackName = rule.trackName;
+                        ruleMatched = true;
+                    }
+                }
+                
+                if (ruleMatched) {
+                    if (type == 0xC0) {
+                        uint8_t program = ev.data1;
+                        uint8_t bankMSB = channelMSB[channel];
+                        uint8_t bankLSB = channelLSB[channel];
+                        
+                        // Remap MegaVoice or proprietary patches to GM equivalents
+                        m_megaVoiceTranslator.translatePatch(trackName, bankMSB, bankLSB, program);
+                        
+                        // Flush Bank Select first
+                        m_midiOut.sendControlChange(destChannel, 0, bankMSB);
+                        m_midiOut.sendControlChange(destChannel, 32, bankLSB);
+                        // Then Program Change
+                        m_midiOut.sendProgramChange(destChannel, program);
+                        
+                        std::cout << "[Sequencer] Flushed Channel setup: Track=" << trackName 
+                                  << " (Ch " << (int)destChannel + 1 << ") -> Bank: " 
+                                  << (int)bankMSB << ":" << (int)bankLSB 
+                                  << ", PC: " << (int)program << std::endl;
+                    }
+                    else if (type == 0xB0 && ev.data1 != 0 && ev.data1 != 32) {
+                        // Forward other general CCs (volume, pan, etc.)
+                        m_midiOut.sendControlChange(destChannel, ev.data1, ev.data2);
+                    }
                 }
             }
         }
@@ -149,11 +193,6 @@ void Sequencer::tick(uint32_t currentTick) {
                 note = m_transpositionBrain.calculateTransposition(note, m_lastValidChord, matchedRule);
             }
             
-            // DIAGNOSTIC PRINT: We need to see exactly what note is being sent to Carla!
-            if (type == 0x90 && velocity > 0) {
-                std::cout << "[Output] Track: " << trackName << " | Sent Note: " << (int)note << std::endl;
-            }
-            
             // 2. MegaVoice Translation
             if (type == 0x90 && velocity > 0 && !trackName.empty()) {
                 std::string articulation;
@@ -164,11 +203,6 @@ void Sequencer::tick(uint32_t currentTick) {
             
             // 3. Send to Output
             if (type == 0x90 && velocity > 0) {
-                static int debugCount = 0;
-                if (debugCount < 10) {
-                    std::cout << "DEBUG: Sent NoteOn to loopMIDI (Ch " << (int)destChannel << ", Note " << (int)note << ")" << std::endl;
-                    debugCount++;
-                }
                 m_midiOut.sendNoteOn(destChannel, note, velocity);
             } else {
                 m_midiOut.sendNoteOff(destChannel, note);
@@ -182,7 +216,14 @@ void Sequencer::tick(uint32_t currentTick) {
             }
         }
         else if (type == 0xC0) {
-            m_midiOut.sendProgramChange(destChannel, ev.data1);
+            uint8_t program = ev.data1;
+            uint8_t bankMSB = 0;
+            uint8_t bankLSB = 0;
+            m_megaVoiceTranslator.translatePatch(trackName, bankMSB, bankLSB, program);
+            
+            m_midiOut.sendControlChange(destChannel, 0, bankMSB);
+            m_midiOut.sendControlChange(destChannel, 32, bankLSB);
+            m_midiOut.sendProgramChange(destChannel, program);
         }
         
         m_eventIndex++;

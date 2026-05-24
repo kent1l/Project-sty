@@ -24,3 +24,6 @@ add_executable(ArrangerEngine ${SOURCES})
 
 # Link libraries
 target_link_libraries(ArrangerEngine PRIVATE rtmidi::rtmidi)
+if(WIN32)
+    target_link_libraries(ArrangerEngine PRIVATE ws2_32)
+endif()

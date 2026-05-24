@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <cstdint>
 
 namespace engine {
 
@@ -26,6 +27,10 @@ public:
     // If it hits a MegaVoice threshold, it modifies the note/velocity references into a VST keyswitch.
     // Returns true if an articulation was triggered.
     bool translate(const std::string& trackName, int& note, int& velocity, std::string& outArticulation);
+
+    // Translates Yamaha proprietary Bank Select (CC0/CC32) and Program Change (PC) to standard GM patches.
+    // Returns true if a translation occurred.
+    bool translatePatch(const std::string& trackName, uint8_t& bankMSB, uint8_t& bankLSB, uint8_t& program);
 
 private:
     // Maps a track name (e.g., "guitar27") to its list of articulation rules

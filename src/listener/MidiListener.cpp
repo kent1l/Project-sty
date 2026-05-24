@@ -77,18 +77,26 @@ void MidiListener::handleMidiMessage(const std::vector<unsigned char>& message) 
     // Note On (sometimes Note On with velocity 0 is used as Note Off)
     if (status == 0x90) {
         if (velocity > 0) {
-            m_chordRecognizer.noteOn(note);
-            std::cout << "\n[MIDI IN] Key Pressed: " << (int)note << " -> Chord is now: " << m_chordRecognizer.detectChord().toString() << std::endl;
-            chordChanged = true;
+            if (note <= m_splitPoint) {
+                m_chordRecognizer.noteOn(note);
+                std::cout << "\n[MIDI IN] Key Pressed: " << (int)note << " -> Chord is now: " << m_chordRecognizer.detectChord().toString() << std::endl;
+                chordChanged = true;
+            } else {
+                std::cout << "\n[MIDI IN] Melody Key Pressed: " << (int)note << " (Bypassed Chord Recognition)" << std::endl;
+            }
         } else {
-            m_chordRecognizer.noteOff(note);
-            chordChanged = true;
+            if (note <= m_splitPoint) {
+                m_chordRecognizer.noteOff(note);
+                chordChanged = true;
+            }
         }
     } 
     // Note Off
     else if (status == 0x80) {
-        m_chordRecognizer.noteOff(note);
-        chordChanged = true;
+        if (note <= m_splitPoint) {
+            m_chordRecognizer.noteOff(note);
+            chordChanged = true;
+        }
     }
 
     if (chordChanged) {

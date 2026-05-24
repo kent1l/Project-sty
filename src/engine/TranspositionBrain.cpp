@@ -1,4 +1,6 @@
 #include "TranspositionBrain.h"
+#include <string>
+#include <iostream>
 
 namespace engine {
 
@@ -11,21 +13,63 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
     }
     
     // NEVER transpose the drum tracks!
-    if (rule.trackName.find("dr") != std::string::npos) {
+    if (rule.trackName.find("dr") != std::string::npos || rule.trackName.find("drum") != std::string::npos) {
         return sourceNote;
     }
 
     // Yamaha Styles are traditionally recorded in CMaj7 (Root C = 0).
-    // The mathematical interval is the difference between the live chord root and C.
-    int interval = liveChord.rootNote - 0; 
+    int sourceOctave = sourceNote / 12;
+    int sourcePitchClass = sourceNote % 12;
     
-    // --- 1. Basic Transposition ---
-    int transposedNote = sourceNote + interval;
+    int mappedPitchClass = sourcePitchClass;
+    std::string type = liveChord.type;
+    
+    // Apply Chord Type scale degree mapping (source is in C Major/Maj7)
+    if (type == "m" || type == "m7" || type == "m9" || type == "m6" || type == "m(add9)" || type == "mM7" || type == "m7b5") {
+        // Minor chords
+        if (sourcePitchClass == 4) { // Major 3rd -> Minor 3rd
+            mappedPitchClass = 3;
+        } else if (sourcePitchClass == 11) { // Major 7th -> Minor 7th / Major 7th
+            if (type == "mM7") mappedPitchClass = 11;
+            else mappedPitchClass = 10;
+        }
+    }
+    else if (type == "dim" || type == "dim7") {
+        // Diminished
+        if (sourcePitchClass == 4) mappedPitchClass = 3; // Minor 3rd
+        else if (sourcePitchClass == 7) mappedPitchClass = 6; // Diminished 5th
+        else if (sourcePitchClass == 11) {
+            if (type == "dim7") mappedPitchClass = 9; // Diminished 7th
+            else mappedPitchClass = 10; // Half-diminished
+        }
+    }
+    else if (type == "aug") {
+        // Augmented
+        if (sourcePitchClass == 7) mappedPitchClass = 8; // Augmented 5th
+    }
+    else if (type == "sus4" || type == "7sus4") {
+        // Suspended 4th
+        if (sourcePitchClass == 4) mappedPitchClass = 5; // Replace 3rd with 4th
+        else if (sourcePitchClass == 11 && type == "7sus4") mappedPitchClass = 10;
+    }
+    else {
+        // Major / Dominant 7th etc.
+        if (sourcePitchClass == 11) {
+            // If it's a dominant 7th style chord, map major 7th to flat 7th
+            if (type == "7" || type == "9" || type == "11" || type == "13" || type == "7b5") {
+                mappedPitchClass = 10;
+            }
+        }
+    }
+
+    // Now shift the mapped pitch class to the target root pitch
+    int transposedNote = (sourceOctave * 12) + mappedPitchClass + liveChord.rootNote;
 
     // --- 2. Fingered on Bass Exception ---
     // If this track is the Bass, and the user played an inverted bass note (e.g. CMaj/E)
     // we override the root interval and transpose strictly to the Bass note.
     if (rule.trackName.find("bass") != std::string::npos && liveChord.bassNote != liveChord.rootNote) {
+        // Shift base of transposition to the bass note instead of root
         int bassInterval = liveChord.bassNote - 0;
         transposedNote = sourceNote + bassInterval;
         
@@ -36,15 +80,11 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
     }
 
     // --- 3. Apply CASM High Key ---
-    // If the transposition forces the instrument higher than the 'High Key' limit,
-    // Yamaha drops it by a full octave so the guitars/pianos don't sound unnaturally high.
-    // (Note: highKey 0xFF means no limit)
     if (rule.highKey != 0xFF) {
         transposedNote = applyHighKey(transposedNote, rule.highKey);
     }
 
     // --- 4. Apply CASM Note Limits ---
-    // Instruments have physical limitations (e.g. a bass guitar can't play lower than E1)
     if (rule.noteLimitHigh != 0xFF && rule.noteLimitLow != 0xFF) {
         transposedNote = applyNoteLimits(transposedNote, rule.noteLimitLow, rule.noteLimitHigh);
     }

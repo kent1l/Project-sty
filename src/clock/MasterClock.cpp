@@ -56,6 +56,10 @@ bool MasterClock::isRunning() const {
     return m_running;
 }
 
+double MasterClock::getTempo() const {
+    return m_bpm.load();
+}
+
 void MasterClock::threadLoop() {
     using namespace std::chrono;
     

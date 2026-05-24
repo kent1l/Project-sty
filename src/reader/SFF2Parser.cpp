@@ -140,12 +140,21 @@ void SFF2Parser::parseMTrk(const char* data, uint32_t length) {
             // SysEx
             uint32_t len = readVariableLength(ptr, end);
             ptr += len;
-        } else if (type == 0xC0 || type == 0xD0) {
-            // 1 data byte
+        } else if (type == 0xC0) {
+            // Program Change (0xC0 - 0xCF)
             if (ptr >= end) break;
             ev.data1 = static_cast<uint8_t>(*ptr++);
+        } else if (type == 0xD0) {
+            // Channel Aftertouch (0xD0 - 0xDF)
+            if (ptr >= end) break;
+            ev.data1 = static_cast<uint8_t>(*ptr++);
+        } else if (type == 0xB0) {
+            // Control Change (0xB0 - 0xBF)
+            if (ptr + 1 >= end) break;
+            ev.data1 = static_cast<uint8_t>(*ptr++);
+            ev.data2 = static_cast<uint8_t>(*ptr++);
         } else if (type >= 0x80 && type <= 0xE0) {
-            // 2 data bytes (Note On, Note Off, CC, Pitch Bend)
+            // Other Voice Messages (Note On, Note Off, Poly Aftertouch, Pitch Bend)
             if (ptr + 1 >= end) break;
             ev.data1 = static_cast<uint8_t>(*ptr++);
             ev.data2 = static_cast<uint8_t>(*ptr++);

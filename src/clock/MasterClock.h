@@ -22,6 +22,7 @@ public:
     void start();
     void stop();
     bool isRunning() const;
+    double getTempo() const;
 
 private:
     void threadLoop();
