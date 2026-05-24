@@ -232,7 +232,8 @@ void SFF2Parser::parseCtab(const char* data, uint32_t length) {
 
     CasmRule rule;
     rule.appliedSections = m_currentSections;
-    rule.destChannel = static_cast<uint8_t>(data[0]);
+    // FIX: data[0] is Source Channel, data[9] is Dest Channel
+    rule.sourceChannel = static_cast<uint8_t>(data[0]);
     
     // Extract the 8-character track name
     rule.trackName = std::string(data + 1, 8);
@@ -244,7 +245,7 @@ void SFF2Parser::parseCtab(const char* data, uint32_t length) {
         rule.trackName.clear(); // Track name was entirely spaces
     }
 
-    rule.sourceChannel = static_cast<uint8_t>(data[9]);
+    rule.destChannel = static_cast<uint8_t>(data[9]);
     rule.playNote = static_cast<uint8_t>(data[10]);
     rule.playChord = static_cast<uint8_t>(data[11]);
     rule.highKey = static_cast<uint8_t>(data[12]);

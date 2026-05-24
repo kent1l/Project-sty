@@ -7,6 +7,13 @@ Sequencer::Sequencer(SFF2Parser& parser, MidiOutput& midiOut, ChordRecognizer& c
     : m_parser(parser), m_midiOut(midiOut), m_chordRecognizer(chordRecognizer),
       m_sectionStartTick(0), m_sectionEndTick(0), m_relativeTick(0), m_eventIndex(0) {
     m_lastValidChord.rootNote = -1;
+
+    // Initialize note memory to -1 (empty)
+    for (int ch = 0; ch < 16; ++ch) {
+        for (int n = 0; n < 128; ++n) {
+            m_playingNotes[ch][n] = -1;
+        }
+    }
 }
 
 Sequencer::~Sequencer() {}
@@ -181,7 +188,7 @@ void Sequencer::tick(uint32_t currentTick) {
         }
 
         if (type == 0x90 || type == 0x80) {
-            int note = ev.data1;
+            int originalNote = ev.data1;
             int velocity = ev.data2;
             
             Chord currentChord = m_chordRecognizer.detectChord();
@@ -189,23 +196,33 @@ void Sequencer::tick(uint32_t currentTick) {
                 m_lastValidChord = currentChord; // Update memory!
             }
             
-            if (m_lastValidChord.rootNote != -1) {
-                note = m_transpositionBrain.calculateTransposition(note, m_lastValidChord, matchedRule);
-            }
-            
-            // 2. MegaVoice Translation
-            if (type == 0x90 && velocity > 0 && !trackName.empty()) {
-                std::string articulation;
-                if (m_megaVoiceTranslator.translate(trackName, note, velocity, articulation)) {
-                    // It was a keyswitch! Note and velocity are updated by reference.
-                }
-            }
-            
-            // 3. Send to Output
+            // Note On
             if (type == 0x90 && velocity > 0) {
-                m_midiOut.sendNoteOn(destChannel, note, velocity);
-            } else {
-                m_midiOut.sendNoteOff(destChannel, note);
+                int transposedNote = originalNote;
+                
+                if (m_lastValidChord.rootNote != -1) {
+                    transposedNote = m_transpositionBrain.calculateTransposition(originalNote, m_lastValidChord, matchedRule);
+                }
+                
+                // MegaVoice Translation
+                if (!trackName.empty()) {
+                    std::string articulation;
+                    m_megaVoiceTranslator.translate(trackName, transposedNote, velocity, articulation);
+                }
+                
+                // Store exact transposed note in memory
+                m_playingNotes[destChannel][originalNote] = transposedNote;
+                m_midiOut.sendNoteOn(destChannel, transposedNote, velocity);
+            } 
+            // Note Off (Type 0x80 OR Note On with 0 velocity)
+            else {
+                int noteToTurnOff = m_playingNotes[destChannel][originalNote];
+                
+                // Only send Note Off if we actually mapped and started this note
+                if (noteToTurnOff != -1) {
+                    m_midiOut.sendNoteOff(destChannel, noteToTurnOff);
+                    m_playingNotes[destChannel][originalNote] = -1; // Clear memory
+                }
             }
         } 
         else if (type == 0xB0) {

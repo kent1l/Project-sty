@@ -12,8 +12,11 @@ int TranspositionBrain::calculateTransposition(int sourceNote, const Chord& live
         return sourceNote; // No chord being played, output the raw note
     }
     
-    // NEVER transpose the drum tracks!
-    if (rule.trackName.find("dr") != std::string::npos || rule.trackName.find("drum") != std::string::npos) {
+    // NEVER transpose the drum tracks! (Yamaha standardizes as Rhy1 / Rhy2)
+    if (rule.trackName.find("Rhy") != std::string::npos || 
+        rule.trackName.find("rhy") != std::string::npos || 
+        rule.trackName.find("dr") != std::string::npos || 
+        rule.trackName.find("drum") != std::string::npos) {
         return sourceNote;
     }
 

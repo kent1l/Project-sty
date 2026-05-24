@@ -35,6 +35,9 @@ private:
     
     // Chord Memory (Latch mode)
     Chord m_lastValidChord;
+
+    // 2D Array to track exact transposed note pitches [channel][original_note]
+    int m_playingNotes[16][128];
 };
 
 } // namespace engine
