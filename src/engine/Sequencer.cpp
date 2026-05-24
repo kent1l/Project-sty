@@ -1,5 +1,7 @@
 #include "Sequencer.h"
 #include <iostream>
+#include <algorithm>
+#include <cctype>
 
 namespace engine {
 
@@ -60,14 +62,15 @@ void Sequencer::updateLiveChord(const Chord& newChord) {
             int velocity = m_activeVelocityMap[trackingKey];
             uint8_t rtr = matchedRule.retriggerRule;
             
-            bool isGuitar = (matchedRule.trackName.find("Gtr") != std::string::npos || 
-                             matchedRule.trackName.find("gtr") != std::string::npos ||
-                             matchedRule.trackName.find("Guitar") != std::string::npos ||
-                             matchedRule.trackName.find("guitar") != std::string::npos ||
+            std::string lowerTrackName = matchedRule.trackName;
+            std::transform(lowerTrackName.begin(), lowerTrackName.end(), lowerTrackName.begin(), ::tolower);
+
+            bool isGuitar = (lowerTrackName.find("gtr") != std::string::npos || 
+                             lowerTrackName.find("guitar") != std::string::npos ||
                              matchedRule.ntt == 4);
                              
-            bool isBass = (matchedRule.trackName.find("Bass") != std::string::npos || 
-                           matchedRule.trackName.find("bass") != std::string::npos ||
+            bool isBass = (lowerTrackName.find("bass") != std::string::npos || 
+                           lowerTrackName.find("bs") != std::string::npos ||
                            matchedRule.ntt == 3);
             
             if (rtr == 0) {
@@ -385,16 +388,18 @@ void Sequencer::tick(uint32_t currentTick) {
                 continue;
             }
 
-            bool isGuitar = (channelRule.trackName.find("Gtr") != std::string::npos || 
-                             channelRule.trackName.find("gtr") != std::string::npos ||
-                             channelRule.trackName.find("Guitar") != std::string::npos ||
-                             channelRule.trackName.find("guitar") != std::string::npos ||
+            std::string lowerTrackName = channelRule.trackName;
+            std::transform(lowerTrackName.begin(), lowerTrackName.end(), lowerTrackName.begin(), ::tolower);
+
+            bool isGuitar = (lowerTrackName.find("gtr") != std::string::npos || 
+                             lowerTrackName.find("guitar") != std::string::npos ||
                              channelRule.ntt == 4);
                              
-            bool isBass = (channelRule.trackName.find("Bass") != std::string::npos || 
-                           channelRule.trackName.find("bass") != std::string::npos ||
+            bool isBass = (lowerTrackName.find("bass") != std::string::npos || 
+                           lowerTrackName.find("bs") != std::string::npos ||
                            channelRule.ntt == 3);
 
+            // Cap velocity at 100 for normal notes (velocity < 115). High-velocity triggers are processed in MegaVoiceTranslator.
             if ((isGuitar || isBass) && velocity < 115 && velocity > 100) {
                 velocity = 100;
             }
@@ -409,6 +414,7 @@ void Sequencer::tick(uint32_t currentTick) {
                 continue;
             }
 
+            // Fold notes to stay inside VST physical playable range
             if (isGuitar) {
                 while (transformedNote < 40) transformedNote += 12;
                 while (transformedNote > 84) transformedNote -= 12;
@@ -418,6 +424,7 @@ void Sequencer::tick(uint32_t currentTick) {
                 while (transformedNote > 67) transformedNote -= 12;
             }
             
+            // Intercept and discard keyswitches
             if (isGuitar && transformedNote < 40) {
                 m_eventIndex++;
                 continue;
