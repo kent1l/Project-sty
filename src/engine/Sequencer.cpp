@@ -90,7 +90,7 @@ void Sequencer::setSection(const std::string& sectionName) {
                 std::string trackName = "";
                 
                 for (const auto& rule : rules) {
-                    if (rule.sourceChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
+                    if (rule.destChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
                         if (rule.trackName.find("CC") != std::string::npos) continue;
                         destChannel = rule.destChannel;
                         trackName = rule.trackName;
@@ -173,7 +173,7 @@ void Sequencer::tick(uint32_t currentTick) {
         CasmRule matchedRule;
         
         for (const auto& rule : rules) {
-            if (rule.sourceChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
+            if (rule.destChannel == channel && rule.appliedSections.find(m_currentSection) != std::string::npos) {
                 if (rule.trackName.find("CC") != std::string::npos) continue;
                 destChannel = rule.destChannel;
                 trackName = rule.trackName;
@@ -226,11 +226,8 @@ void Sequencer::tick(uint32_t currentTick) {
             }
         } 
         else if (type == 0xB0) {
-            if (ev.data1 == 0 || ev.data1 == 32) {
-                m_midiOut.sendControlChange(destChannel, ev.data1, 0); // Sanitize Bank Select
-            } else {
-                m_midiOut.sendControlChange(destChannel, ev.data1, ev.data2);
-            }
+            // Forward Control Changes (including CC0 and CC32 Bank Selects) unaltered
+            m_midiOut.sendControlChange(destChannel, ev.data1, ev.data2);
         }
         else if (type == 0xC0) {
             uint8_t program = ev.data1;

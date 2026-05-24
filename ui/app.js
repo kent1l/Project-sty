@@ -86,5 +86,21 @@ document.querySelectorAll('.bank-btn').forEach(btn => {
     });
 });
 
+// MIDI Note to Name Helper
+function getMidiNoteName(note) {
+    const notes = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+    const octave = Math.floor(note / 12) - 1;
+    const name = notes[note % 12];
+    return name + octave;
+}
+
+// Split Point Slider Event
+document.getElementById('split-slider').addEventListener('input', (e) => {
+    const newSplit = parseInt(e.target.value);
+    document.getElementById('split-display-note').innerText = newSplit;
+    document.getElementById('split-display-name').innerText = getMidiNoteName(newSplit);
+    sendCmd('split', newSplit);
+});
+
 // Start the connection loop
 connectWebSocket();

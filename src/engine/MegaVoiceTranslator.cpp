@@ -58,9 +58,10 @@ bool MegaVoiceTranslator::translate(const std::string& trackName, int& note, int
                 note = rule.keyswitchNote;
                 velocity = rule.keyswitchVelocity;
             } else {
-                // If we don't mute it, we just override the note for simplicity
-                note = rule.keyswitchNote;
-                velocity = rule.keyswitchVelocity;
+                // Do NOT override the note here. 
+                // Let the original melody note pass through to the VST.
+                // (Note: True keyswitch injection requires sending two separate MIDI events 
+                // in the Sequencer, but this prevents deleting the musical note).
             }
             
             return true; // We successfully translated the MegaVoice!
@@ -74,7 +75,12 @@ bool MegaVoiceTranslator::translatePatch(const std::string& trackName, uint8_t& 
     std::string lowerTrack = trackName;
     for (auto& c : lowerTrack) c = std::tolower(c);
     
-    // Default bank select to 0 to bypass proprietary Yamaha XG bank numbers and fallback to General MIDI
+    // Preserve banks for drums (which often require MSB 127 or 120)
+    if (lowerTrack.find("dr") != std::string::npos || lowerTrack.find("drum") != std::string::npos) {
+        return true; 
+    }
+
+    // Default bank select to 0 for melodic tracks to fallback to General MIDI
     bankMSB = 0;
     bankLSB = 0;
     
@@ -91,11 +97,6 @@ bool MegaVoiceTranslator::translatePatch(const std::string& trackName, uint8_t& 
         if (program < 32 || program > 39) {
             program = 33; // Electric Fingered Bass
         }
-        return true;
-    }
-    
-    if (lowerTrack.find("dr") != std::string::npos || lowerTrack.find("drum") != std::string::npos) {
-        // Drums keep standard program
         return true;
     }
 

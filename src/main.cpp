@@ -92,7 +92,14 @@ int main(int argc, char* argv[]) {
     wsServer.setCommandCallback([&](const std::string& cmd, const std::string& val) {
         std::cout << "[WebSocket] Command: " << cmd << " | Value: " << val << std::endl;
         
-        if (cmd == "tempo") {
+        if (cmd == "split") {
+            try {
+                int newSplit = std::stoi(val);
+                liveListener.setSplitPoint(newSplit);
+                std::cout << ">>> Split point updated to MIDI Note: " << newSplit << " <<<" << std::endl;
+            } catch (...) {}
+        }
+        else if (cmd == "tempo") {
             try {
                 double newTempo = std::stod(val);
                 clock.setTempo(newTempo);
